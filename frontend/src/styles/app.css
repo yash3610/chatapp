@@ -1068,7 +1068,9 @@ button {
 .image-preview-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(12, 16, 24, 0.58);
+  background: rgba(8, 12, 20, 0.72);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
   display: grid;
   place-items: center;
   z-index: 40;
@@ -1076,19 +1078,40 @@ button {
 }
 
 .image-preview-modal {
-  width: min(840px, 100%);
+  width: min(940px, 100%);
   max-height: min(90vh, 780px);
   border-radius: 16px;
-  padding: 0.75rem;
+  padding: 0.8rem;
   display: grid;
-  gap: 0.6rem;
+  gap: 0.72rem;
+  background: var(--surface);
+}
+
+.image-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.image-preview-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.image-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
 }
 
 .image-preview-modal img {
   width: 100%;
-  max-height: calc(90vh - 90px);
+  max-height: calc(90vh - 120px);
   object-fit: contain;
   border-radius: 12px;
+  background: rgba(0, 0, 0, 0.15);
 }
 
 .image-preview-close {
@@ -1245,6 +1268,25 @@ button {
 }
 
 @media (max-width: 640px) {
+  .image-preview-modal {
+    border-radius: 14px;
+    padding: 0.62rem;
+  }
+
+  .image-preview-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.45rem;
+  }
+
+  .image-preview-actions {
+    justify-content: flex-end;
+  }
+
+  .image-preview-modal img {
+    max-height: calc(88vh - 145px);
+  }
+
   .message-menu-trigger {
     opacity: 1;
     transform: none;

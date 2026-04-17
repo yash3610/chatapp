@@ -112,6 +112,7 @@ const ChatDashboard = () => {
   const [theme, setTheme] = useState(localStorage.getItem('chat_theme') || 'light');
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [previewImageUrl, setPreviewImageUrl] = useState('');
+  const [isDownloadingPreview, setIsDownloadingPreview] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [activeCall, setActiveCall] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
@@ -361,6 +362,46 @@ const ChatDashboard = () => {
 
   const toggleTheme = () => {
     applyTheme(theme === 'dark' ? 'light' : 'dark');
+  };
+
+  const getDownloadFileName = (imageUrl) => {
+    try {
+      const url = new URL(imageUrl);
+      const pathname = url.pathname || '';
+      const rawName = pathname.split('/').pop() || 'chat-image';
+      const cleanName = rawName.split('?')[0] || 'chat-image';
+      return cleanName.includes('.') ? cleanName : `${cleanName}.jpg`;
+    } catch {
+      return `chat-image-${Date.now()}.jpg`;
+    }
+  };
+
+  const handleDownloadPreview = async () => {
+    if (!previewImageUrl || isDownloadingPreview) {
+      return;
+    }
+
+    try {
+      setIsDownloadingPreview(true);
+      const response = await fetch(previewImageUrl, { mode: 'cors' });
+      if (!response.ok) {
+        throw new Error('Download failed');
+      }
+
+      const fileBlob = await response.blob();
+      const objectUrl = URL.createObjectURL(fileBlob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = getDownloadFileName(previewImageUrl);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      addToast('Unable to download image right now.', 'error');
+    } finally {
+      setIsDownloadingPreview(false);
+    }
   };
 
   const handleEditProfile = async ({ name, avatarFile, removeAvatar = false }) => {
@@ -1244,13 +1285,26 @@ const ChatDashboard = () => {
       {previewImageUrl && (
         <div className="image-preview-overlay" onClick={() => setPreviewImageUrl('')} role="presentation">
           <div className="image-preview-modal neu-raised" onClick={(event) => event.stopPropagation()}>
-            <button
-              type="button"
-              className="image-preview-close btn btn--ghost neu-button"
-              onClick={() => setPreviewImageUrl('')}
-            >
-              Close
-            </button>
+            <div className="image-preview-head">
+              <p>Image Preview</p>
+              <div className="image-preview-actions">
+                <button
+                  type="button"
+                  className="btn btn--ghost neu-button"
+                  onClick={handleDownloadPreview}
+                  disabled={isDownloadingPreview}
+                >
+                  {isDownloadingPreview ? 'Downloading...' : 'Download'}
+                </button>
+                <button
+                  type="button"
+                  className="image-preview-close btn btn--ghost neu-button"
+                  onClick={() => setPreviewImageUrl('')}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
             <img src={previewImageUrl} alt="Large preview" />
           </div>
         </div>
