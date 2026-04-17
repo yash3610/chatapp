@@ -226,7 +226,21 @@ const MessageInput = ({
           />
         </svg>
       </button>
-      <div className="message-input__field-wrap" ref={emojiPickerRef}>
+
+      <div className="message-input__emoji-wrap" ref={emojiPickerRef}>
+        <button
+          className={`btn btn--ghost neu-button message-input__emoji ${showEmojiPicker ? 'message-input__emoji--active' : ''}`}
+          type="button"
+          onClick={handleEmojiToggle}
+          disabled={disabled || isUploadingImage}
+          title="Add emoji"
+          aria-label="Add emoji"
+        >
+          <span role="img" aria-hidden="true">
+            😊
+          </span>
+        </button>
+
         {showEmojiPicker && (
           <div className={`message-input__emoji-popover ${showEmojiPicker ? 'is-open' : ''}`}>
             <EmojiPicker
@@ -240,7 +254,9 @@ const MessageInput = ({
             />
           </div>
         )}
+      </div>
 
+      <div className="message-input__field-wrap">
         <input
           ref={textInputRef}
           type="text"
@@ -260,18 +276,6 @@ const MessageInput = ({
           onSelect={(event) => syncSelection(event.target)}
           disabled={disabled}
         />
-        <button
-          className={`btn btn--ghost neu-button message-input__emoji ${showEmojiPicker ? 'message-input__emoji--active' : ''}`}
-          type="button"
-          onClick={handleEmojiToggle}
-          disabled={disabled || isUploadingImage}
-          title="Add emoji"
-          aria-label="Add emoji"
-        >
-          <span role="img" aria-hidden="true">
-            😊
-          </span>
-        </button>
       </div>
       <button
         className="btn btn--primary neu-button"

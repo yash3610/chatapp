@@ -988,6 +988,12 @@ button {
   gap: 0.45rem;
 }
 
+.message-input__emoji-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
 .message-input__attach {
   min-width: 44px;
   width: 44px;
