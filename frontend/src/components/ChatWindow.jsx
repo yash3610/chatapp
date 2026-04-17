@@ -35,6 +35,7 @@ const formatDateDivider = (timestamp) => {
 const ChatWindow = ({
   messages,
   selectedUser,
+  isGroupChat,
   currentUser,
   isTyping,
   onStartCall,
@@ -171,56 +172,62 @@ const ChatWindow = ({
           <h3>{selectedUser.name}</h3>
         </div>
         <div className="chat-window__header-right">
-          <span className={selectedUser.isOnline ? 'badge badge--online' : 'badge'}>
-            {selectedUser.isOnline ? 'Online' : 'Offline'}
-          </span>
-          <button
-            type="button"
-            className="btn btn--ghost neu-button call-btn"
-            aria-label="Start audio call"
-            title="Audio Call"
-            onClick={() => onStartCall?.('audio')}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" className="call-btn__icon">
-              <path
-                d="M6.62 10.79a15.54 15.54 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.3.56 3.52.56a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C11.85 21 3 12.15 3 2.99a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.22.19 2.4.56 3.52a1 1 0 0 1-.24 1.02l-2.2 2.26z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="btn btn--ghost neu-button call-btn"
-            aria-label="Start video call"
-            title="Video Call"
-            onClick={() => onStartCall?.('video')}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" className="call-btn__icon">
-              <path
-                d="M16 8l4-2v12l-4-2"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <rect
-                x="3"
-                y="6"
-                width="13"
-                height="12"
-                rx="2"
-                ry="2"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-              />
-            </svg>
-          </button>
+          {isGroupChat ? (
+            <span className="badge">{selectedUser.members?.length || selectedUser.memberCount || 0} members</span>
+          ) : (
+            <>
+              <span className={selectedUser.isOnline ? 'badge badge--online' : 'badge'}>
+                {selectedUser.isOnline ? 'Online' : 'Offline'}
+              </span>
+              <button
+                type="button"
+                className="btn btn--ghost neu-button call-btn"
+                aria-label="Start audio call"
+                title="Audio Call"
+                onClick={() => onStartCall?.('audio')}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" className="call-btn__icon">
+                  <path
+                    d="M6.62 10.79a15.54 15.54 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.3.56 3.52.56a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C11.85 21 3 12.15 3 2.99a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.22.19 2.4.56 3.52a1 1 0 0 1-.24 1.02l-2.2 2.26z"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost neu-button call-btn"
+                aria-label="Start video call"
+                title="Video Call"
+                onClick={() => onStartCall?.('video')}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" className="call-btn__icon">
+                  <path
+                    d="M16 8l4-2v12l-4-2"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <rect
+                    x="3"
+                    y="6"
+                    width="13"
+                    height="12"
+                    rx="2"
+                    ry="2"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                  />
+                </svg>
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -246,7 +253,7 @@ const ChatWindow = ({
             const { message } = item;
             const isSentByMe = String(message.sender?._id || message.sender) === String(currentUser.id);
             const isCallMessage = message.messageType === 'call';
-            const senderName = isSentByMe ? 'You' : message.sender?.name || selectedUser.name;
+            const senderName = isGroupChat ? message.sender?.name || (isSentByMe ? 'You' : 'Member') : isSentByMe ? 'You' : message.sender?.name || selectedUser.name;
             const senderAvatar = isSentByMe ? currentUser.avatarUrl : message.sender?.avatarUrl || selectedUser.avatarUrl;
             const statusLabel = isSentByMe
               ? message.status === 'seen'
@@ -366,7 +373,7 @@ const ChatWindow = ({
                     <span>{senderName}</span>
                     <span>
                       <time>{formatTime(message.createdAt)}</time>
-                      {!isCallMessage && statusLabel ? ` • ${statusLabel}` : ''}
+                      {!isGroupChat && !isCallMessage && statusLabel ? ` • ${statusLabel}` : ''}
                       {message.edited && !message.deleted ? ' • edited' : ''}
                     </span>
                   </div>

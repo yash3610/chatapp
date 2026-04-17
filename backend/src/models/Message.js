@@ -32,7 +32,17 @@ const messageSchema = new mongoose.Schema(
     receiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
+    },
+    chatId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+      index: true,
+    },
+    isGroup: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
     replyTo: {
       type: mongoose.Schema.Types.ObjectId,
@@ -117,5 +127,6 @@ messageSchema.index({ receiver: 1, status: 1, createdAt: -1 });
 messageSchema.index({ conversation: 1, createdAt: -1 });
 messageSchema.index({ sender: 1, receiver: 1, clientMessageId: 1 });
 messageSchema.index({ deletedFor: 1 });
+messageSchema.index({ isGroup: 1, chatId: 1, createdAt: -1 });
 
 export default mongoose.model('Message', messageSchema);

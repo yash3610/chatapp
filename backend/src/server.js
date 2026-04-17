@@ -8,6 +8,7 @@ import { Server } from 'socket.io';
 
 import { connectDB } from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
+import groupRoutes from './routes/groupRoutes.js';
 import messageRoutes from './routes/messageRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import { initializeSocket } from './socket.js';
@@ -63,6 +64,7 @@ app.get('/api/health', (_, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/groups', groupRoutes);
 app.use('/api/messages', messageRoutes);
 
 app.use((error, _req, res, _next) => {

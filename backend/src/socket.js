@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import Conversation from './models/Conversation.js';
+import Group from './models/Group.js';
 import Message from './models/Message.js';
 import User from './models/User.js';
 import { buildParticipantKey, getOrCreateConversation } from './utils/conversation.js';
@@ -105,6 +106,12 @@ export const initializeSocket = (io) => {
   io.on('connection', async (socket) => {
     const currentUserId = String(socket.user.id);
     socket.join(currentUserId);
+
+    const myGroups = await Group.find({ members: currentUserId }).select('_id').lean();
+    myGroups.forEach((group) => {
+      socket.join(String(group._id));
+    });
+
     addOnlineSocket(currentUserId, socket.id);
 
     await User.findByIdAndUpdate(currentUserId, {
@@ -159,6 +166,8 @@ export const initializeSocket = (io) => {
         conversation: conversation._id,
         sender: currentUserId,
         receiver: to,
+        chatId: to,
+        isGroup: false,
         messageType: 'call',
         callType,
         callEvent,
@@ -238,6 +247,8 @@ export const initializeSocket = (io) => {
           conversation: conversation._id,
           sender: currentUserId,
           receiver: to,
+          chatId: to,
+          isGroup: false,
           messageType: 'text',
           text: trimmedText,
           imageUrl: imageUrl || '',
@@ -282,6 +293,99 @@ export const initializeSocket = (io) => {
       io.to(String(to)).emit('typing', { from: currentUserId, isTyping: false });
     });
 
+    socket.on('group_typing', async ({ groupId, isTyping }) => {
+      if (!groupId || typeof isTyping !== 'boolean') {
+        return;
+      }
+
+      const group = await Group.findOne({ _id: groupId, members: currentUserId }).select('_id');
+      if (!group) {
+        return;
+      }
+
+      socket.to(String(groupId)).emit('group_typing', {
+        groupId: String(groupId),
+        from: currentUserId,
+        isTyping,
+      });
+    });
+
+    socket.on('group_message', async (payload, ack) => {
+      try {
+        const { groupId, text, imageUrl, clientMessageId, replyTo } = payload || {};
+        const trimmedText = text?.trim() || '';
+        const normalizedClientMessageId = (clientMessageId || '').toString().trim();
+        const normalizedReplyTo = replyTo || null;
+
+        if (!groupId || (!trimmedText && !imageUrl)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid group message payload' });
+          }
+          return;
+        }
+
+        const group = await Group.findOne({ _id: groupId, members: currentUserId }).select('_id');
+        if (!group) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed' });
+          }
+          return;
+        }
+
+        if (normalizedClientMessageId) {
+          const existing = await Message.findOne({
+            sender: currentUserId,
+            isGroup: true,
+            chatId: groupId,
+            clientMessageId: normalizedClientMessageId,
+          });
+          const existingPopulated = existing ? await populateMessage(Message.findById(existing._id)) : null;
+
+          if (existingPopulated) {
+            io.to(String(groupId)).emit('receive_message', existingPopulated);
+            if (typeof ack === 'function') {
+              ack({ ok: true, message: existingPopulated });
+            }
+            return;
+          }
+        }
+
+        if (normalizedReplyTo) {
+          const repliedMessage = await Message.findById(normalizedReplyTo).select('_id isGroup chatId');
+          if (!repliedMessage || !repliedMessage.isGroup || String(repliedMessage.chatId) !== String(groupId)) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Reply target is not in this group' });
+            }
+            return;
+          }
+        }
+
+        const savedMessage = await Message.create({
+          sender: currentUserId,
+          receiver: null,
+          chatId: groupId,
+          isGroup: true,
+          messageType: 'text',
+          text: trimmedText,
+          imageUrl: imageUrl || '',
+          replyTo: normalizedReplyTo,
+          clientMessageId: normalizedClientMessageId,
+          status: 'sent',
+        });
+
+        const message = await populateMessage(Message.findById(savedMessage._id));
+        io.to(String(groupId)).emit('receive_message', message);
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, message });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to send group message' });
+        }
+      }
+    });
+
     socket.on('message_react', async ({ messageId, emoji }, ack) => {
       try {
         if (!messageId || !ALLOWED_REACTION_EMOJIS.includes(emoji)) {
@@ -299,12 +403,29 @@ export const initializeSocket = (io) => {
           return;
         }
 
-        const participants = [String(message.sender), String(message.receiver)];
-        if (!participants.includes(currentUserId) || message.deleted) {
+        if (message.deleted) {
           if (typeof ack === 'function') {
             ack({ ok: false, message: 'Not allowed' });
           }
           return;
+        }
+
+        if (message.isGroup) {
+          const group = await Group.findOne({ _id: message.chatId, members: currentUserId }).select('_id');
+          if (!group) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Not allowed' });
+            }
+            return;
+          }
+        } else {
+          const participants = [String(message.sender), String(message.receiver)];
+          if (!participants.includes(currentUserId)) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Not allowed' });
+            }
+            return;
+          }
         }
 
         const existingIndex = message.reactions.findIndex(
@@ -323,8 +444,12 @@ export const initializeSocket = (io) => {
 
         await message.save();
         const populated = await populateMessage(Message.findById(message._id));
-        io.to(String(message.sender)).emit('message_reaction_update', populated);
-        io.to(String(message.receiver)).emit('message_reaction_update', populated);
+        if (message.isGroup) {
+          io.to(String(message.chatId)).emit('message_reaction_update', populated);
+        } else {
+          io.to(String(message.sender)).emit('message_reaction_update', populated);
+          io.to(String(message.receiver)).emit('message_reaction_update', populated);
+        }
 
         if (typeof ack === 'function') {
           ack({ ok: true, message: populated });
@@ -367,8 +492,19 @@ export const initializeSocket = (io) => {
         await message.save();
 
         const populated = await populateMessage(Message.findById(message._id));
-        io.to(String(message.sender)).emit('message_updated', populated);
-        io.to(String(message.receiver)).emit('message_updated', populated);
+        if (message.isGroup) {
+          const group = await Group.findOne({ _id: message.chatId, members: currentUserId }).select('_id');
+          if (!group) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Not allowed to edit this message' });
+            }
+            return;
+          }
+          io.to(String(message.chatId)).emit('message_updated', populated);
+        } else {
+          io.to(String(message.sender)).emit('message_updated', populated);
+          io.to(String(message.receiver)).emit('message_updated', populated);
+        }
 
         if (typeof ack === 'function') {
           ack({ ok: true, message: populated });
@@ -397,12 +533,22 @@ export const initializeSocket = (io) => {
           return;
         }
 
-        const participants = [String(message.sender), String(message.receiver)];
-        if (!participants.includes(currentUserId)) {
-          if (typeof ack === 'function') {
-            ack({ ok: false, message: 'Not allowed' });
+        if (message.isGroup) {
+          const group = await Group.findOne({ _id: message.chatId, members: currentUserId }).select('_id');
+          if (!group) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Not allowed' });
+            }
+            return;
           }
-          return;
+        } else {
+          const participants = [String(message.sender), String(message.receiver)];
+          if (!participants.includes(currentUserId)) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Not allowed' });
+            }
+            return;
+          }
         }
 
         if (mode === 'everyone') {
@@ -422,8 +568,12 @@ export const initializeSocket = (io) => {
           await message.save();
 
           const populated = await populateMessage(Message.findById(message._id));
-          io.to(String(message.sender)).emit('message_deleted_for_everyone', populated);
-          io.to(String(message.receiver)).emit('message_deleted_for_everyone', populated);
+          if (message.isGroup) {
+            io.to(String(message.chatId)).emit('message_deleted_for_everyone', populated);
+          } else {
+            io.to(String(message.sender)).emit('message_deleted_for_everyone', populated);
+            io.to(String(message.receiver)).emit('message_deleted_for_everyone', populated);
+          }
 
           if (typeof ack === 'function') {
             ack({ ok: true, mode: 'everyone', message: populated });

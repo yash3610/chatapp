@@ -1,5 +1,6 @@
 import Message from '../models/Message.js';
 import Conversation from '../models/Conversation.js';
+import Group from '../models/Group.js';
 import cloudinary from '../config/cloudinary.js';
 import { buildParticipantKey, getOrCreateConversation } from '../utils/conversation.js';
 
@@ -27,8 +28,24 @@ const emitToParticipants = (io, message, eventName, payload) => {
     return;
   }
 
+  if (message.isGroup && message.chatId) {
+    io.to(String(message.chatId)).emit(eventName, payload);
+    return;
+  }
+
   io.to(String(message.sender?._id || message.sender)).emit(eventName, payload);
-  io.to(String(message.receiver?._id || message.receiver)).emit(eventName, payload);
+  if (message.receiver?._id || message.receiver) {
+    io.to(String(message.receiver?._id || message.receiver)).emit(eventName, payload);
+  }
+};
+
+const isGroupMember = async (groupId, userId) => {
+  if (!groupId) {
+    return false;
+  }
+
+  const group = await Group.findOne({ _id: groupId, members: userId }).select('_id');
+  return Boolean(group);
 };
 
 const typingStateKey = (receiverId, senderId) => `${String(receiverId)}:${String(senderId)}`;
@@ -144,6 +161,8 @@ export const sendMessage = async (req, res) => {
       conversation: conversation._id,
       sender: req.user.id,
       receiver: receiverId,
+      chatId: receiverId,
+      isGroup: false,
       messageType: 'text',
       text: trimmedText,
       imageUrl: imageUrl || '',
@@ -258,6 +277,103 @@ export const relayTypingEvent = async (req, res) => {
   }
 };
 
+export const getGroupConversation = async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const before = req.query.before ? new Date(req.query.before) : null;
+    const pageSize = Math.min(Number(req.query.limit) || DEFAULT_PAGE_SIZE, 50);
+
+    const allowed = await isGroupMember(groupId, req.user.id);
+    if (!allowed) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+
+    const query = {
+      isGroup: true,
+      chatId: groupId,
+      deletedFor: { $nin: [req.user.id] },
+    };
+
+    if (before && !Number.isNaN(before.getTime())) {
+      query.createdAt = { $lt: before };
+    }
+
+    const messages = await populateMessage(Message.find(query).sort({ createdAt: -1 }).limit(pageSize)).lean();
+    const orderedMessages = messages.reverse();
+    const hasMore = messages.length === pageSize;
+    const nextCursor = hasMore && orderedMessages.length > 0 ? orderedMessages[0].createdAt : null;
+
+    return res.status(200).json({
+      messages: orderedMessages,
+      hasMore,
+      nextCursor,
+      conversationId: null,
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: 'Failed to fetch group chat history' });
+  }
+};
+
+export const sendGroupMessage = async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { text, imageUrl, clientMessageId, replyTo } = req.body || {};
+    const trimmedText = text?.trim() || '';
+    const normalizedClientMessageId = (clientMessageId || '').toString().trim();
+    const normalizedReplyTo = replyTo || null;
+
+    if (!trimmedText && !imageUrl) {
+      return res.status(400).json({ message: 'Text or image is required' });
+    }
+
+    const group = await Group.findOne({ _id: groupId, members: req.user.id }).select('_id members');
+    if (!group) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+
+    if (normalizedClientMessageId) {
+      const existing = await Message.findOne({
+        sender: req.user.id,
+        isGroup: true,
+        chatId: groupId,
+        clientMessageId: normalizedClientMessageId,
+      });
+
+      const existingPopulated = existing ? await populateMessage(Message.findById(existing._id)) : null;
+      if (existingPopulated) {
+        return res.status(200).json(existingPopulated);
+      }
+    }
+
+    if (normalizedReplyTo) {
+      const repliedMessage = await Message.findById(normalizedReplyTo).select('_id isGroup chatId sender');
+      if (!repliedMessage || !repliedMessage.isGroup || String(repliedMessage.chatId) !== String(groupId)) {
+        return res.status(400).json({ message: 'Reply target is not in this group' });
+      }
+    }
+
+    const message = await Message.create({
+      sender: req.user.id,
+      receiver: null,
+      chatId: groupId,
+      isGroup: true,
+      messageType: 'text',
+      text: trimmedText,
+      imageUrl: imageUrl || '',
+      replyTo: normalizedReplyTo,
+      clientMessageId: normalizedClientMessageId,
+      status: 'sent',
+    });
+
+    const populatedMessage = await populateMessage(Message.findById(message._id));
+    req.app.get('io')?.to(String(groupId)).emit('receive_message', populatedMessage);
+
+    return res.status(201).json(populatedMessage);
+  } catch (_error) {
+    return res.status(500).json({ message: 'Failed to send group message' });
+  }
+};
+
 export const reactToMessage = async (req, res) => {
   try {
     const { messageId } = req.params;
@@ -273,9 +389,17 @@ export const reactToMessage = async (req, res) => {
     }
 
     const currentUserId = String(req.user.id);
-    const participants = [String(message.sender), String(message.receiver)];
-    if (!participants.includes(currentUserId)) {
-      return res.status(403).json({ message: 'Not allowed' });
+
+    if (message.isGroup) {
+      const allowed = await isGroupMember(message.chatId, req.user.id);
+      if (!allowed) {
+        return res.status(403).json({ message: 'Not allowed' });
+      }
+    } else {
+      const participants = [String(message.sender), String(message.receiver)];
+      if (!participants.includes(currentUserId)) {
+        return res.status(403).json({ message: 'Not allowed' });
+      }
     }
 
     if (message.deleted) {
@@ -354,9 +478,17 @@ export const deleteMessage = async (req, res) => {
     }
 
     const currentUserId = String(req.user.id);
-    const participants = [String(message.sender), String(message.receiver)];
-    if (!participants.includes(currentUserId)) {
-      return res.status(403).json({ message: 'Not allowed' });
+
+    if (message.isGroup) {
+      const allowed = await isGroupMember(message.chatId, req.user.id);
+      if (!allowed) {
+        return res.status(403).json({ message: 'Not allowed' });
+      }
+    } else {
+      const participants = [String(message.sender), String(message.receiver)];
+      if (!participants.includes(currentUserId)) {
+        return res.status(403).json({ message: 'Not allowed' });
+      }
     }
 
     if (mode === 'me') {

@@ -126,8 +126,14 @@ const CallOverlay = ({
     <div className="call-overlay" role="dialog" aria-modal="true">
       <div className="call-overlay__topbar">
         <p>{callType === 'video' ? 'Video Call' : 'Audio Call'} with {peerName}</p>
-        <button type="button" className="btn btn--ghost neu-button" onClick={onHangup}>
-          End
+        <button
+          type="button"
+          className="btn neu-button call-overlay__hangup-btn"
+          onClick={onHangup}
+          aria-label="End call"
+        >
+          <span aria-hidden="true">📵</span>
+          <span>End</span>
         </button>
       </div>
       {(configError || callError) && <p className="call-overlay__error">{configError || callError}</p>}

@@ -203,7 +203,7 @@ button {
 
 .sidebar {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto 1fr;
   gap: 0.85rem;
   min-height: 0;
 }
@@ -284,6 +284,26 @@ button {
   color: var(--muted);
 }
 
+.sidebar__tabs {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.sidebar__tab {
+  border: none;
+  border-radius: 999px;
+  padding: 0.44rem 0.9rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+}
+
+.sidebar__tab--active {
+  color: var(--text);
+  background: var(--surface-alt);
+}
+
 .sidebar__list {
   border-radius: 16px;
   padding: 0.6rem;
@@ -293,6 +313,21 @@ button {
   gap: 0.6rem;
   overflow-y: auto;
   min-height: 0;
+}
+
+.sidebar__list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.1rem;
+}
+
+.sidebar__create-group {
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.45rem 0.7rem;
 }
 
 .sidebar__empty {
@@ -781,6 +816,28 @@ button {
   font-size: 0.9rem;
 }
 
+.call-overlay__hangup-btn {
+  border: none;
+  border-radius: 999px;
+  min-height: 2.25rem;
+  padding: 0 0.95rem;
+  background: linear-gradient(145deg, #e45f5f, #c83a3a);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.call-overlay__hangup-btn:hover {
+  background: linear-gradient(145deg, #ee6d6d, #cf4040);
+}
+
+.call-overlay__hangup-btn:active {
+  transform: translateY(0);
+}
+
 .call-overlay__error {
   margin: 0;
   padding: 0 1rem;
@@ -1134,6 +1191,13 @@ button {
   padding: 0.9rem;
 }
 
+.profile-modal--group {
+  width: min(520px, 100%);
+  max-height: min(86vh, 760px);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
 .profile-modal__head {
   display: flex;
   align-items: center;
@@ -1193,6 +1257,98 @@ button {
   justify-content: space-between;
   align-items: center;
   gap: 0.6rem;
+}
+
+.group-selected-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.1rem;
+}
+
+.group-selected-row strong {
+  font-size: 0.84rem;
+}
+
+.group-selected-count {
+  min-width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.group-selected-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
+  max-height: 74px;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.group-selected-chip {
+  padding: 0.3rem 0.52rem;
+  border-radius: 999px;
+  font-size: 0.73rem;
+  color: var(--text);
+}
+
+.group-members-list {
+  border-radius: 12px;
+  padding: 0.42rem;
+  max-height: min(38vh, 300px);
+  overflow-y: auto;
+  display: grid;
+  gap: 0.38rem;
+}
+
+.group-member-item {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: 0.52rem;
+  border-radius: 11px;
+  padding: 0.48rem 0.5rem;
+  cursor: pointer;
+  transition: background-color 0.16s ease;
+}
+
+.group-member-item:hover {
+  background: var(--surface-alt);
+}
+
+.group-member-item__checkbox {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+}
+
+.group-member-item__content {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.group-member-item__name {
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.group-member-item__content small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.73rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .toast-stack {
@@ -1268,6 +1424,12 @@ button {
 }
 
 @media (max-width: 640px) {
+  .call-overlay__hangup-btn {
+    min-height: 2.1rem;
+    padding: 0 0.82rem;
+    font-size: 0.82rem;
+  }
+
   .image-preview-modal {
     border-radius: 14px;
     padding: 0.62rem;
@@ -1294,6 +1456,23 @@ button {
 
   .message-input__context p {
     max-width: 54vw;
+  }
+
+  .profile-modal--group {
+    width: 100%;
+    max-height: 90vh;
+  }
+
+  .group-members-list {
+    max-height: 34vh;
+  }
+
+  .group-member-item {
+    grid-template-columns: auto auto 1fr;
+  }
+
+  .group-member-item .status-dot {
+    display: none;
   }
 
   .message-input {

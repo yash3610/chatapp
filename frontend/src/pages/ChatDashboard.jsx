@@ -101,6 +101,7 @@ const ChatDashboard = () => {
   const zegoServerSecret = import.meta.env.VITE_ZEGO_SERVER_SECRET;
 
   const [users, setUsers] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
@@ -130,6 +131,7 @@ const ChatDashboard = () => {
   const audioContextRef = useRef(null);
 
   const selectedUserId = selectedUser?._id;
+  const isGroupChat = Boolean(selectedUser?.isGroup);
 
   const getDirectCallRoomId = (firstId, secondId) => {
     return [String(firstId), String(secondId)].sort().join('__');
@@ -279,7 +281,7 @@ const ChatDashboard = () => {
   };
 
   const startCall = (callType) => {
-    if (!selectedUser || !socket) {
+    if (!selectedUser || !socket || isGroupChat) {
       return;
     }
 
@@ -336,6 +338,18 @@ const ChatDashboard = () => {
     });
   };
 
+  const handleSelectUser = (nextUser) => {
+    setSelectedUser(nextUser ? { ...nextUser, isGroup: false } : null);
+    setIsTyping(false);
+    typingSentRef.current = false;
+  };
+
+  const handleSelectGroup = (nextGroup) => {
+    setSelectedUser(nextGroup ? { ...nextGroup, isGroup: true } : null);
+    setIsTyping(false);
+    typingSentRef.current = false;
+  };
+
   const moveUserToTop = (userId) => {
     if (!userId) {
       return;
@@ -352,6 +366,47 @@ const ChatDashboard = () => {
       nextUsers.unshift(targetUser);
       return nextUsers;
     });
+  };
+
+  const moveGroupToTop = (groupId) => {
+    if (!groupId) {
+      return;
+    }
+
+    setGroups((prevGroups) => {
+      const index = prevGroups.findIndex((group) => String(group._id) === String(groupId));
+      if (index <= 0) {
+        return prevGroups;
+      }
+
+      const nextGroups = [...prevGroups];
+      const [targetGroup] = nextGroups.splice(index, 1);
+      nextGroups.unshift(targetGroup);
+      return nextGroups;
+    });
+  };
+
+  const handleCreateGroup = async ({ name, memberIds }) => {
+    try {
+      const { data } = await api.post('/groups', {
+        name,
+        members: memberIds,
+      });
+
+      const normalized = {
+        ...data,
+        isGroup: true,
+        memberCount: data.members?.length || 0,
+      };
+
+      setGroups((prev) => [normalized, ...prev.filter((group) => String(group._id) !== String(normalized._id))]);
+      setSelectedUser(normalized);
+      addToast('Group created successfully.', 'success');
+    } catch (err) {
+      const message = err.response?.data?.message || 'Failed to create group';
+      addToast(message, 'error');
+      throw err;
+    }
   };
 
   const applyTheme = (nextTheme) => {
@@ -530,7 +585,8 @@ const ChatDashboard = () => {
       params.before = before;
     }
 
-    const { data } = await api.get(`/messages/${chatUserId}`, { params });
+    const url = isGroupChat ? `/messages/group/${chatUserId}` : `/messages/${chatUserId}`;
+    const { data } = await api.get(url, { params });
     return data;
   };
 
@@ -540,6 +596,9 @@ const ChatDashboard = () => {
       setUsers(data);
       setSelectedUser((prev) => {
         if (prev) {
+          if (prev.isGroup) {
+            return prev;
+          }
           return data.find((person) => person._id === prev._id) || null;
         }
         return data[0] || null;
@@ -553,6 +612,31 @@ const ChatDashboard = () => {
 
   useEffect(() => {
     fetchUsers();
+  }, []);
+
+  const fetchGroups = async () => {
+    try {
+      const { data } = await api.get('/groups');
+      const normalized = (data || []).map((group) => ({
+        ...group,
+        isGroup: true,
+        memberCount: group.members?.length || 0,
+      }));
+      setGroups(normalized);
+
+      setSelectedUser((prev) => {
+        if (!prev || !prev.isGroup) {
+          return prev;
+        }
+        return normalized.find((group) => String(group._id) === String(prev._id)) || null;
+      });
+    } catch {
+      // Keep private chat usable even if groups endpoint fails.
+    }
+  };
+
+  useEffect(() => {
+    fetchGroups();
   }, []);
 
   useEffect(() => {
@@ -571,12 +655,16 @@ const ChatDashboard = () => {
 
     const fetchConversation = async () => {
       try {
-        const data = await api.get(`/messages/${selectedUserId}`, { params: { limit: 25 } });
+        const data = await api.get(isGroupChat ? `/messages/group/${selectedUserId}` : `/messages/${selectedUserId}`, {
+          params: { limit: 25 },
+        });
         setMessages(data.data.messages || []);
         setHasMore(data.data.hasMore);
         setNextCursor(data.data.nextCursor);
         setUnreadCounts((prev) => ({ ...prev, [selectedUserId]: 0 }));
-        await markConversationSeen(selectedUserId);
+        if (!isGroupChat) {
+          await markConversationSeen(selectedUserId);
+        }
       } catch (err) {
         const message = err.response?.data?.message || 'Failed to fetch messages';
         setError(message);
@@ -585,10 +673,10 @@ const ChatDashboard = () => {
     };
 
     fetchConversation();
-  }, [selectedUserId]);
+  }, [selectedUserId, isGroupChat]);
 
   useEffect(() => {
-    if (!selectedUserId) {
+    if (!selectedUserId || isGroupChat) {
       return undefined;
     }
 
@@ -604,7 +692,7 @@ const ChatDashboard = () => {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [selectedUserId]);
+  }, [selectedUserId, isGroupChat]);
 
   useEffect(() => {
     if (!selectedUserId) {
@@ -627,7 +715,7 @@ const ChatDashboard = () => {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [selectedUserId, socket]);
+  }, [selectedUserId, socket, isGroupChat]);
 
   useEffect(() => {
     if (!socket) {
@@ -635,6 +723,25 @@ const ChatDashboard = () => {
     }
 
     const handleIncomingMessage = (message) => {
+      if (message?.isGroup) {
+        const groupId = String(message.chatId || '');
+        const activeGroupId = isGroupChat ? String(selectedUserId || '') : '';
+
+        moveGroupToTop(groupId);
+
+        if (groupId && groupId === activeGroupId) {
+          shouldAutoScrollRef.current = true;
+          setMessages((prev) => appendUniqueMessage(prev, message));
+        } else if (groupId && String(message.sender?._id || message.sender) !== String(user.id)) {
+          setUnreadCounts((prev) => ({
+            ...prev,
+            [groupId]: (prev[groupId] || 0) + 1,
+          }));
+        }
+
+        return;
+      }
+
       const senderId = String(message.sender?._id || message.sender);
       const receiverId = String(message.receiver?._id || message.receiver);
       const currentUserId = String(user.id);
@@ -670,6 +777,10 @@ const ChatDashboard = () => {
     };
 
     const handleTyping = ({ from, isTyping: nextTyping }) => {
+      if (isGroupChat) {
+        return;
+      }
+
       if (String(from) === String(selectedUserId)) {
         setIsTyping(nextTyping);
 
@@ -697,9 +808,30 @@ const ChatDashboard = () => {
         if (!prevSelected) {
           return prevSelected;
         }
+        if (prevSelected.isGroup) {
+          return prevSelected;
+        }
         const isOnline = onlineUserIds.includes(String(prevSelected._id));
         return { ...prevSelected, isOnline };
       });
+    };
+
+    const handleGroupTyping = ({ groupId, from, isTyping: nextTyping }) => {
+      if (!isGroupChat || String(groupId) !== String(selectedUserId) || String(from) === String(user.id)) {
+        return;
+      }
+
+      setIsTyping(Boolean(nextTyping));
+
+      if (typingResetTimerRef.current) {
+        window.clearTimeout(typingResetTimerRef.current);
+      }
+
+      if (nextTyping) {
+        typingResetTimerRef.current = window.setTimeout(() => {
+          setIsTyping(false);
+        }, 1800);
+      }
     };
 
     const handleMessageStatusUpdate = ({ messageIds, status, deliveredAt, seenAt }) => {
@@ -857,6 +989,7 @@ const ChatDashboard = () => {
 
     socket.on('receive_message', handleIncomingMessage);
     socket.on('typing', handleTyping);
+    socket.on('group_typing', handleGroupTyping);
     socket.on('online_users', handleOnlineUsers);
     socket.on('message_status_update', handleMessageStatusUpdate);
     socket.on('chat_error', handleChatError);
@@ -873,6 +1006,7 @@ const ChatDashboard = () => {
     return () => {
       socket.off('receive_message', handleIncomingMessage);
       socket.off('typing', handleTyping);
+      socket.off('group_typing', handleGroupTyping);
       socket.off('online_users', handleOnlineUsers);
       socket.off('message_status_update', handleMessageStatusUpdate);
       socket.off('chat_error', handleChatError);
@@ -898,6 +1032,7 @@ const ChatDashboard = () => {
     stopRingtone,
     editingMessage,
     replyContext,
+    isGroupChat,
   ]);
 
   useEffect(() => {
@@ -1032,14 +1167,27 @@ const ChatDashboard = () => {
 
     if (socket?.connected) {
       try {
-        const ackMessage = await emitPrivateMessageWithAck({
-          to: selectedUserId,
-          text: trimmedText,
-          imageUrl,
-          clientMessageId,
-          replyTo: replyToId,
-        });
-        moveUserToTop(selectedUserId);
+        const ackMessage = isGroupChat
+          ? await emitSocketAck('group_message', {
+              groupId: selectedUserId,
+              text: trimmedText,
+              imageUrl,
+              clientMessageId,
+              replyTo: replyToId,
+            }).then((response) => response.message)
+          : await emitPrivateMessageWithAck({
+              to: selectedUserId,
+              text: trimmedText,
+              imageUrl,
+              clientMessageId,
+              replyTo: replyToId,
+            });
+
+        if (isGroupChat) {
+          moveGroupToTop(selectedUserId);
+        } else {
+          moveUserToTop(selectedUserId);
+        }
         setMessages((prev) => appendUniqueMessage(prev, ackMessage));
         setReplyContext(null);
         return true;
@@ -1051,29 +1199,53 @@ const ChatDashboard = () => {
     try {
       await waitForSocketConnect(socket);
 
-      const ackMessage = await emitPrivateMessageWithAck({
-        to: selectedUserId,
-        text: trimmedText,
-        imageUrl,
-        clientMessageId,
-        replyTo: replyToId,
-      });
-      moveUserToTop(selectedUserId);
+      const ackMessage = isGroupChat
+        ? await emitSocketAck('group_message', {
+            groupId: selectedUserId,
+            text: trimmedText,
+            imageUrl,
+            clientMessageId,
+            replyTo: replyToId,
+          }).then((response) => response.message)
+        : await emitPrivateMessageWithAck({
+            to: selectedUserId,
+            text: trimmedText,
+            imageUrl,
+            clientMessageId,
+            replyTo: replyToId,
+          });
+
+      if (isGroupChat) {
+        moveGroupToTop(selectedUserId);
+      } else {
+        moveUserToTop(selectedUserId);
+      }
       setMessages((prev) => appendUniqueMessage(prev, ackMessage));
       setReplyContext(null);
       return true;
     } catch {
       try {
-        const { data } = await api.post('/messages', {
-          receiverId: selectedUserId,
-          text: trimmedText,
-          imageUrl,
-          clientMessageId,
-          replyTo: replyToId,
-        });
+        const { data } = isGroupChat
+          ? await api.post(`/messages/group/${selectedUserId}`, {
+              text: trimmedText,
+              imageUrl,
+              clientMessageId,
+              replyTo: replyToId,
+            })
+          : await api.post('/messages', {
+              receiverId: selectedUserId,
+              text: trimmedText,
+              imageUrl,
+              clientMessageId,
+              replyTo: replyToId,
+            });
 
         setMessages((prev) => appendUniqueMessage(prev, data));
-        moveUserToTop(selectedUserId);
+        if (isGroupChat) {
+          moveGroupToTop(selectedUserId);
+        } else {
+          moveUserToTop(selectedUserId);
+        }
         backupToastAtRef.current = Date.now();
         setReplyContext(null);
         return true;
@@ -1202,6 +1374,13 @@ const ChatDashboard = () => {
 
     typingSentRef.current = true;
 
+    if (isGroupChat) {
+      if (socket?.connected) {
+        socket.emit('group_typing', { groupId: selectedUserId, isTyping: true });
+      }
+      return;
+    }
+
     if (!socket) {
       api.post('/messages/typing', { to: selectedUserId, isTyping: true }).catch(() => {});
       return;
@@ -1223,6 +1402,13 @@ const ChatDashboard = () => {
 
     typingSentRef.current = false;
 
+    if (isGroupChat) {
+      if (socket?.connected) {
+        socket.emit('group_typing', { groupId: selectedUserId, isTyping: false });
+      }
+      return;
+    }
+
     if (socket?.connected) {
       socket.emit('typing_stop', { to: selectedUserId });
       api.post('/messages/typing', { to: selectedUserId, isTyping: false }).catch(() => {});
@@ -1238,11 +1424,16 @@ const ChatDashboard = () => {
     <main className="dashboard">
       <Sidebar
         users={users}
+        groups={groups}
         selectedUser={selectedUser}
-        onSelectUser={setSelectedUser}
+        selectedGroupId={isGroupChat ? selectedUserId : null}
+        onSelectUser={handleSelectUser}
+        onSelectGroup={handleSelectGroup}
+        onCreateGroup={handleCreateGroup}
         currentUserName={user.name}
         currentUserEmail={user.email}
         currentUserAvatar={user.avatarUrl}
+        currentUserId={user.id}
         onLogout={logout}
         unreadCounts={unreadCounts}
         theme={theme}
@@ -1255,6 +1446,7 @@ const ChatDashboard = () => {
           key={chatTitle}
           messages={messages}
           selectedUser={selectedUser}
+          isGroupChat={isGroupChat}
           currentUser={user}
           isTyping={isTyping}
           onStartCall={startCall}
