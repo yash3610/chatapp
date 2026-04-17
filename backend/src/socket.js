@@ -5,6 +5,21 @@ import User from './models/User.js';
 import { buildParticipantKey, getOrCreateConversation } from './utils/conversation.js';
 
 const onlineUsers = new Map();
+const ALLOWED_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢'];
+
+const populateMessage = (query) =>
+  query
+    .populate('sender', 'name email avatarUrl')
+    .populate('receiver', 'name email avatarUrl')
+    .populate('reactions.user', 'name avatarUrl')
+    .populate({
+      path: 'replyTo',
+      select: '_id text imageUrl deleted messageType sender createdAt',
+      populate: {
+        path: 'sender',
+        select: 'name avatarUrl',
+      },
+    });
 
 const getOnlineUserIds = () => Array.from(onlineUsers.keys());
 
@@ -158,9 +173,7 @@ export const initializeSocket = (io) => {
         lastMessageAt: message.createdAt,
       });
 
-      const populated = await Message.findById(message._id)
-        .populate('sender', 'name email avatarUrl')
-        .populate('receiver', 'name email avatarUrl');
+      const populated = await populateMessage(Message.findById(message._id));
 
       io.to(String(to)).emit('receive_message', populated);
       io.to(currentUserId).emit('receive_message', populated);
@@ -168,9 +181,10 @@ export const initializeSocket = (io) => {
 
     socket.on('private_message', async (payload, ack) => {
       try {
-        const { to, text, imageUrl, clientMessageId } = payload || {};
+        const { to, text, imageUrl, clientMessageId, replyTo } = payload || {};
         const trimmedText = text?.trim() || '';
         const normalizedClientMessageId = (clientMessageId || '').toString().trim();
+        const normalizedReplyTo = replyTo || null;
 
         if (!to || (!trimmedText && !imageUrl)) {
           if (typeof ack === 'function') {
@@ -184,15 +198,33 @@ export const initializeSocket = (io) => {
             sender: currentUserId,
             receiver: to,
             clientMessageId: normalizedClientMessageId,
-          })
-            .populate('sender', 'name email avatarUrl')
-            .populate('receiver', 'name email avatarUrl');
+          });
 
-          if (existing) {
-            io.to(String(to)).emit('receive_message', existing);
-            io.to(currentUserId).emit('receive_message', existing);
+          const existingPopulated = existing ? await populateMessage(Message.findById(existing._id)) : null;
+
+          if (existingPopulated) {
+            io.to(String(to)).emit('receive_message', existingPopulated);
+            io.to(currentUserId).emit('receive_message', existingPopulated);
             if (typeof ack === 'function') {
-              ack({ ok: true, message: existing });
+              ack({ ok: true, message: existingPopulated });
+            }
+            return;
+          }
+        }
+
+        if (normalizedReplyTo) {
+          const repliedMessage = await Message.findById(normalizedReplyTo).select('_id sender receiver');
+          if (!repliedMessage) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Replied message not found' });
+            }
+            return;
+          }
+
+          const participants = [String(repliedMessage.sender), String(repliedMessage.receiver)];
+          if (!participants.includes(String(currentUserId)) || !participants.includes(String(to))) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Reply target is not in this conversation' });
             }
             return;
           }
@@ -209,6 +241,7 @@ export const initializeSocket = (io) => {
           messageType: 'text',
           text: trimmedText,
           imageUrl: imageUrl || '',
+          replyTo: normalizedReplyTo,
           clientMessageId: normalizedClientMessageId,
           status: deliveredNow ? 'delivered' : 'sent',
           deliveredAt: deliveredNow ? now : null,
@@ -219,9 +252,7 @@ export const initializeSocket = (io) => {
           lastMessageAt: savedMessage.createdAt,
         });
 
-        const message = await Message.findById(savedMessage._id)
-          .populate('sender', 'name email avatarUrl')
-          .populate('receiver', 'name email avatarUrl');
+        const message = await populateMessage(Message.findById(savedMessage._id));
 
         io.to(String(to)).emit('receive_message', message);
         io.to(currentUserId).emit('receive_message', message);
@@ -249,6 +280,172 @@ export const initializeSocket = (io) => {
         return;
       }
       io.to(String(to)).emit('typing', { from: currentUserId, isTyping: false });
+    });
+
+    socket.on('message_react', async ({ messageId, emoji }, ack) => {
+      try {
+        if (!messageId || !ALLOWED_REACTION_EMOJIS.includes(emoji)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid reaction payload' });
+          }
+          return;
+        }
+
+        const message = await Message.findById(messageId);
+        if (!message) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Message not found' });
+          }
+          return;
+        }
+
+        const participants = [String(message.sender), String(message.receiver)];
+        if (!participants.includes(currentUserId) || message.deleted) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed' });
+          }
+          return;
+        }
+
+        const existingIndex = message.reactions.findIndex(
+          (reaction) => String(reaction.user) === currentUserId
+        );
+
+        if (existingIndex >= 0) {
+          if (message.reactions[existingIndex].emoji === emoji) {
+            message.reactions.splice(existingIndex, 1);
+          } else {
+            message.reactions[existingIndex].emoji = emoji;
+          }
+        } else {
+          message.reactions.push({ user: currentUserId, emoji });
+        }
+
+        await message.save();
+        const populated = await populateMessage(Message.findById(message._id));
+        io.to(String(message.sender)).emit('message_reaction_update', populated);
+        io.to(String(message.receiver)).emit('message_reaction_update', populated);
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, message: populated });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to update reaction' });
+        }
+      }
+    });
+
+    socket.on('message_edit', async ({ messageId, text }, ack) => {
+      try {
+        const nextText = (text || '').trim();
+        if (!messageId || !nextText) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid edit payload' });
+          }
+          return;
+        }
+
+        const message = await Message.findById(messageId);
+        if (!message) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Message not found' });
+          }
+          return;
+        }
+
+        if (String(message.sender) !== currentUserId || message.deleted || message.messageType !== 'text') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed to edit this message' });
+          }
+          return;
+        }
+
+        message.text = nextText;
+        message.edited = true;
+        message.editedAt = new Date();
+        await message.save();
+
+        const populated = await populateMessage(Message.findById(message._id));
+        io.to(String(message.sender)).emit('message_updated', populated);
+        io.to(String(message.receiver)).emit('message_updated', populated);
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, message: populated });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to edit message' });
+        }
+      }
+    });
+
+    socket.on('message_delete', async ({ messageId, mode }, ack) => {
+      try {
+        if (!messageId) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid delete payload' });
+          }
+          return;
+        }
+
+        const message = await Message.findById(messageId);
+        if (!message) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Message not found' });
+          }
+          return;
+        }
+
+        const participants = [String(message.sender), String(message.receiver)];
+        if (!participants.includes(currentUserId)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed' });
+          }
+          return;
+        }
+
+        if (mode === 'everyone') {
+          if (String(message.sender) !== currentUserId) {
+            if (typeof ack === 'function') {
+              ack({ ok: false, message: 'Only sender can delete for everyone' });
+            }
+            return;
+          }
+
+          message.deleted = true;
+          message.text = '';
+          message.imageUrl = '';
+          message.reactions = [];
+          message.edited = false;
+          message.editedAt = null;
+          await message.save();
+
+          const populated = await populateMessage(Message.findById(message._id));
+          io.to(String(message.sender)).emit('message_deleted_for_everyone', populated);
+          io.to(String(message.receiver)).emit('message_deleted_for_everyone', populated);
+
+          if (typeof ack === 'function') {
+            ack({ ok: true, mode: 'everyone', message: populated });
+          }
+          return;
+        }
+
+        if (!message.deletedFor.some((id) => String(id) === currentUserId)) {
+          message.deletedFor.push(currentUserId);
+          await message.save();
+        }
+
+        io.to(currentUserId).emit('message_deleted_for_me', { messageId: String(message._id) });
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, mode: 'me', messageId: String(message._id) });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to delete message' });
+        }
+      }
     });
 
     socket.on('call_invite', ({ to, roomId, callType, callerName, callerAvatar }) => {

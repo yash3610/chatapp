@@ -31,6 +31,27 @@ const appendUniqueMessage = (currentMessages, nextMessage) => {
   return [...currentMessages, nextMessage];
 };
 
+const upsertMessage = (currentMessages, nextMessage) => {
+  if (!nextMessage?._id) {
+    return currentMessages;
+  }
+
+  const exists = currentMessages.some((message) => String(message._id) === String(nextMessage._id));
+
+  if (!exists) {
+    return [...currentMessages, nextMessage].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  }
+
+  return currentMessages.map((message) =>
+    String(message._id) === String(nextMessage._id)
+      ? {
+          ...message,
+          ...nextMessage,
+        }
+      : message
+  );
+};
+
 const createClientMessageId = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -95,6 +116,8 @@ const ChatDashboard = () => {
   const [activeCall, setActiveCall] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
   const [outgoingCall, setOutgoingCall] = useState(null);
+  const [replyContext, setReplyContext] = useState(null);
+  const [editingMessage, setEditingMessage] = useState(null);
 
   const messagesEndRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
@@ -455,6 +478,11 @@ const ChatDashboard = () => {
     }
   };
 
+  const clearComposerContext = () => {
+    setReplyContext(null);
+    setEditingMessage(null);
+  };
+
   const fetchConversation = async (chatUserId, before = null) => {
     const params = { limit: 25 };
     if (before) {
@@ -492,6 +520,7 @@ const ChatDashboard = () => {
       setHasMore(false);
       setNextCursor(null);
       setIsTyping(false);
+      clearComposerContext();
       typingSentRef.current = false;
       return;
     }
@@ -751,6 +780,40 @@ const ChatDashboard = () => {
       stopRingtone();
     };
 
+    const handleMessageReactionUpdate = (message) => {
+      setMessages((prev) => upsertMessage(prev, message));
+    };
+
+    const handleMessageUpdated = (message) => {
+      setMessages((prev) => upsertMessage(prev, message));
+      if (editingMessage && String(editingMessage._id) === String(message._id)) {
+        setEditingMessage(null);
+      }
+    };
+
+    const handleMessageDeletedForEveryone = (message) => {
+      setMessages((prev) => upsertMessage(prev, message));
+      if (editingMessage && String(editingMessage._id) === String(message._id)) {
+        setEditingMessage(null);
+      }
+      if (replyContext && String(replyContext._id) === String(message._id)) {
+        setReplyContext(null);
+      }
+    };
+
+    const handleMessageDeletedForMe = ({ messageId }) => {
+      if (!messageId) {
+        return;
+      }
+      setMessages((prev) => prev.filter((message) => String(message._id) !== String(messageId)));
+      if (editingMessage && String(editingMessage._id) === String(messageId)) {
+        setEditingMessage(null);
+      }
+      if (replyContext && String(replyContext._id) === String(messageId)) {
+        setReplyContext(null);
+      }
+    };
+
     socket.on('receive_message', handleIncomingMessage);
     socket.on('typing', handleTyping);
     socket.on('online_users', handleOnlineUsers);
@@ -761,6 +824,10 @@ const ChatDashboard = () => {
     socket.on('call_reject', handleCallReject);
     socket.on('call_cancel', handleCallCancel);
     socket.on('call_end', handleCallEnd);
+    socket.on('message_reaction_update', handleMessageReactionUpdate);
+    socket.on('message_updated', handleMessageUpdated);
+    socket.on('message_deleted_for_everyone', handleMessageDeletedForEveryone);
+    socket.on('message_deleted_for_me', handleMessageDeletedForMe);
 
     return () => {
       socket.off('receive_message', handleIncomingMessage);
@@ -773,8 +840,24 @@ const ChatDashboard = () => {
       socket.off('call_reject', handleCallReject);
       socket.off('call_cancel', handleCallCancel);
       socket.off('call_end', handleCallEnd);
+      socket.off('message_reaction_update', handleMessageReactionUpdate);
+      socket.off('message_updated', handleMessageUpdated);
+      socket.off('message_deleted_for_everyone', handleMessageDeletedForEveryone);
+      socket.off('message_deleted_for_me', handleMessageDeletedForMe);
     };
-  }, [socket, selectedUserId, user.id, users, activeCall, incomingCall, clearCallTimeout, startRingtone, stopRingtone]);
+  }, [
+    socket,
+    selectedUserId,
+    user.id,
+    users,
+    activeCall,
+    incomingCall,
+    clearCallTimeout,
+    startRingtone,
+    stopRingtone,
+    editingMessage,
+    replyContext,
+  ]);
 
   useEffect(() => {
     if (!shouldAutoScrollRef.current) {
@@ -806,11 +889,76 @@ const ChatDashboard = () => {
     });
   };
 
-  const sendMessage = async (text = '', imageFile = null) => {
+  const emitSocketAck = (eventName, payload, timeoutMs = 7000) => {
+    return new Promise((resolve, reject) => {
+      if (!socket) {
+        reject(new Error('Socket unavailable'));
+        return;
+      }
+
+      socket.timeout(timeoutMs).emit(eventName, payload, (error, response) => {
+        if (error) {
+          reject(new Error('Socket timeout'));
+          return;
+        }
+
+        if (!response?.ok) {
+          reject(new Error(response?.message || 'Socket ack failed'));
+          return;
+        }
+
+        resolve(response);
+      });
+    });
+  };
+
+  const sendMessage = async (text = '', imageFile = null, meta = {}) => {
     const trimmedText = text.trim();
-    if (!selectedUserId || (!trimmedText && !imageFile)) {
+    const editingMessageId = meta?.editingMessageId || null;
+    const replyToId = meta?.replyToId || null;
+
+    if (!selectedUserId) {
       return false;
     }
+
+    if (editingMessageId) {
+      if (!trimmedText) {
+        return false;
+      }
+
+      if (socket?.connected) {
+        try {
+          const response = await emitSocketAck('message_edit', {
+            messageId: editingMessageId,
+            text: trimmedText,
+          });
+          if (response?.message) {
+            setMessages((prev) => upsertMessage(prev, response.message));
+            setEditingMessage(null);
+            return true;
+          }
+        } catch {
+          // Fallback to REST path.
+        }
+      }
+
+      try {
+        const { data } = await api.patch(`/messages/edit/${editingMessageId}`, { text: trimmedText });
+        setMessages((prev) => upsertMessage(prev, data));
+        setEditingMessage(null);
+        return true;
+      } catch (apiErr) {
+        const message = apiErr.response?.data?.message || 'Failed to edit message';
+        setError(message);
+        addToast(message, 'error');
+        return false;
+      }
+    }
+
+    if (!trimmedText && !imageFile) {
+      return false;
+    }
+
     const clientMessageId = createClientMessageId();
 
     shouldAutoScrollRef.current = true;
@@ -848,9 +996,11 @@ const ChatDashboard = () => {
           text: trimmedText,
           imageUrl,
           clientMessageId,
+          replyTo: replyToId,
         });
         moveUserToTop(selectedUserId);
         setMessages((prev) => appendUniqueMessage(prev, ackMessage));
+        setReplyContext(null);
         return true;
       } catch {
         // Continue to REST fallback if realtime ack is delayed or missed.
@@ -865,9 +1015,11 @@ const ChatDashboard = () => {
         text: trimmedText,
         imageUrl,
         clientMessageId,
+        replyTo: replyToId,
       });
       moveUserToTop(selectedUserId);
       setMessages((prev) => appendUniqueMessage(prev, ackMessage));
+      setReplyContext(null);
       return true;
     } catch {
       try {
@@ -876,11 +1028,13 @@ const ChatDashboard = () => {
           text: trimmedText,
           imageUrl,
           clientMessageId,
+          replyTo: replyToId,
         });
 
         setMessages((prev) => appendUniqueMessage(prev, data));
         moveUserToTop(selectedUserId);
         backupToastAtRef.current = Date.now();
+        setReplyContext(null);
         return true;
       } catch (apiErr) {
         const message = apiErr.response?.data?.message || 'Failed to send message';
@@ -889,6 +1043,93 @@ const ChatDashboard = () => {
         return false;
       }
     }
+  };
+
+  const handleReactMessage = async (messageId, emoji) => {
+    if (!messageId || !emoji) {
+      return;
+    }
+
+    if (socket?.connected) {
+      try {
+        const response = await emitSocketAck('message_react', { messageId, emoji });
+        if (response?.message) {
+          setMessages((prev) => upsertMessage(prev, response.message));
+          return;
+        }
+      } catch {
+        // Fallback to REST path.
+      }
+    }
+
+    try {
+      const { data } = await api.patch(`/messages/reactions/${messageId}`, { emoji });
+      setMessages((prev) => upsertMessage(prev, data));
+    } catch {
+      addToast('Failed to react to message', 'error');
+    }
+  };
+
+  const handleDeleteMessage = async (messageId, mode) => {
+    if (!messageId || !mode) {
+      return;
+    }
+
+    let handledViaSocket = false;
+
+    if (socket?.connected) {
+      try {
+        const response = await emitSocketAck('message_delete', { messageId, mode });
+        if (response?.mode === 'me') {
+          setMessages((prev) => prev.filter((message) => String(message._id) !== String(messageId)));
+        } else if (response?.mode === 'everyone' && response?.message) {
+          setMessages((prev) => upsertMessage(prev, response.message));
+        }
+        handledViaSocket = true;
+      } catch {
+        // Fallback to REST path.
+      }
+    }
+
+    if (!handledViaSocket) {
+      try {
+        const { data } = await api.patch(`/messages/delete/${messageId}`, { mode });
+        if (mode === 'me') {
+          setMessages((prev) => prev.filter((message) => String(message._id) !== String(messageId)));
+        } else {
+          setMessages((prev) => upsertMessage(prev, data));
+        }
+      } catch {
+        addToast('Failed to delete message', 'error');
+      }
+    }
+
+    if (editingMessage && String(editingMessage._id) === String(messageId)) {
+      setEditingMessage(null);
+    }
+
+    if (replyContext && String(replyContext._id) === String(messageId)) {
+      setReplyContext(null);
+    }
+  };
+
+  const handleReplyMessage = (message) => {
+    if (!message || message.deleted) {
+      return;
+    }
+    setEditingMessage(null);
+    setReplyContext(message);
+  };
+
+  const handleEditMessage = (message) => {
+    if (!message || message.deleted) {
+      return;
+    }
+    if (String(message.sender?._id || message.sender) !== String(user.id)) {
+      return;
+    }
+    setReplyContext(null);
+    setEditingMessage(message);
   };
 
   const loadOlderMessages = async () => {
@@ -981,6 +1222,10 @@ const ChatDashboard = () => {
           onLoadOlder={loadOlderMessages}
           isLoadingOlder={isLoadingOlder}
           onImageClick={setPreviewImageUrl}
+          onReplyMessage={handleReplyMessage}
+          onReactMessage={handleReactMessage}
+          onEditMessage={handleEditMessage}
+          onDeleteMessage={handleDeleteMessage}
         />
 
         <MessageInput
@@ -989,6 +1234,10 @@ const ChatDashboard = () => {
           onTypingStart={handleTypingStart}
           onTypingStop={handleTypingStop}
           isUploadingImage={isUploadingImage}
+          replyToMessage={replyContext}
+          editingMessage={editingMessage}
+          onCancelReply={() => setReplyContext(null)}
+          onCancelEdit={() => setEditingMessage(null)}
         />
       </section>
 

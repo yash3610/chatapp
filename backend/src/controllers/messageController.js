@@ -6,6 +6,30 @@ import { buildParticipantKey, getOrCreateConversation } from '../utils/conversat
 const DEFAULT_PAGE_SIZE = 25;
 const TYPING_TTL_MS = 5000;
 const typingStateMap = new Map();
+const ALLOWED_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢'];
+
+const populateMessage = (query) =>
+  query
+    .populate('sender', 'name email avatarUrl')
+    .populate('receiver', 'name email avatarUrl')
+    .populate('reactions.user', 'name avatarUrl')
+    .populate({
+      path: 'replyTo',
+      select: '_id text imageUrl deleted messageType sender createdAt',
+      populate: {
+        path: 'sender',
+        select: 'name avatarUrl',
+      },
+    });
+
+const emitToParticipants = (io, message, eventName, payload) => {
+  if (!io || !message) {
+    return;
+  }
+
+  io.to(String(message.sender?._id || message.sender)).emit(eventName, payload);
+  io.to(String(message.receiver?._id || message.receiver)).emit(eventName, payload);
+};
 
 const typingStateKey = (receiverId, senderId) => `${String(receiverId)}:${String(senderId)}`;
 
@@ -50,12 +74,13 @@ export const getConversation = async (req, res) => {
       query.createdAt = { $lt: before };
     }
 
-    const messages = await Message.find(query)
+    query.deletedFor = { $nin: [req.user.id] };
+
+    const messages = await populateMessage(
+      Message.find(query)
       .sort({ createdAt: -1 })
       .limit(pageSize)
-      .populate('sender', 'name email avatarUrl')
-      .populate('receiver', 'name email avatarUrl')
-      .lean();
+    ).lean();
 
     const orderedMessages = messages.reverse();
     const hasMore = messages.length === pageSize;
@@ -74,9 +99,10 @@ export const getConversation = async (req, res) => {
 
 export const sendMessage = async (req, res) => {
   try {
-    const { receiverId, text, imageUrl, clientMessageId } = req.body;
+    const { receiverId, text, imageUrl, clientMessageId, replyTo } = req.body;
     const trimmedText = text?.trim() || '';
     const normalizedClientMessageId = (clientMessageId || '').toString().trim();
+    const normalizedReplyTo = replyTo || null;
 
     if (!receiverId || (!trimmedText && !imageUrl)) {
       return res.status(400).json({ message: 'Receiver and either text or image are required' });
@@ -87,12 +113,24 @@ export const sendMessage = async (req, res) => {
         sender: req.user.id,
         receiver: receiverId,
         clientMessageId: normalizedClientMessageId,
-      })
-        .populate('sender', 'name email avatarUrl')
-        .populate('receiver', 'name email avatarUrl');
+      });
 
-      if (existing) {
-        return res.status(200).json(existing);
+      const existingPopulated = existing ? await populateMessage(Message.findById(existing._id)) : null;
+
+      if (existingPopulated) {
+        return res.status(200).json(existingPopulated);
+      }
+    }
+
+    if (normalizedReplyTo) {
+      const repliedMessage = await Message.findById(normalizedReplyTo).select('_id sender receiver');
+      if (!repliedMessage) {
+        return res.status(400).json({ message: 'Replied message not found' });
+      }
+
+      const participants = [String(repliedMessage.sender), String(repliedMessage.receiver)];
+      if (!participants.includes(String(req.user.id)) || !participants.includes(String(receiverId))) {
+        return res.status(400).json({ message: 'Reply target is not in this conversation' });
       }
     }
 
@@ -109,6 +147,7 @@ export const sendMessage = async (req, res) => {
       messageType: 'text',
       text: trimmedText,
       imageUrl: imageUrl || '',
+      replyTo: normalizedReplyTo,
       clientMessageId: normalizedClientMessageId,
       status: deliveredNow ? 'delivered' : 'sent',
       deliveredAt: deliveredNow ? now : null,
@@ -119,9 +158,7 @@ export const sendMessage = async (req, res) => {
       lastMessageAt: message.createdAt,
     });
 
-    const populatedMessage = await Message.findById(message._id)
-      .populate('sender', 'name email avatarUrl')
-      .populate('receiver', 'name email avatarUrl');
+    const populatedMessage = await populateMessage(Message.findById(message._id));
 
     if (io) {
       io.to(String(receiverId)).emit('receive_message', populatedMessage);
@@ -218,6 +255,141 @@ export const relayTypingEvent = async (req, res) => {
     return res.status(200).json({ ok: true });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to relay typing event' });
+  }
+};
+
+export const reactToMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { emoji } = req.body || {};
+
+    if (!ALLOWED_REACTION_EMOJIS.includes(emoji)) {
+      return res.status(400).json({ message: 'Invalid reaction emoji' });
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+
+    const currentUserId = String(req.user.id);
+    const participants = [String(message.sender), String(message.receiver)];
+    if (!participants.includes(currentUserId)) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+
+    if (message.deleted) {
+      return res.status(400).json({ message: 'Cannot react to deleted message' });
+    }
+
+    const existingIndex = message.reactions.findIndex(
+      (reaction) => String(reaction.user) === currentUserId
+    );
+
+    if (existingIndex >= 0) {
+      if (message.reactions[existingIndex].emoji === emoji) {
+        message.reactions.splice(existingIndex, 1);
+      } else {
+        message.reactions[existingIndex].emoji = emoji;
+      }
+    } else {
+      message.reactions.push({ user: req.user.id, emoji });
+    }
+
+    await message.save();
+    const populatedMessage = await populateMessage(Message.findById(message._id));
+
+    emitToParticipants(req.app.get('io'), populatedMessage, 'message_reaction_update', populatedMessage);
+
+    return res.status(200).json(populatedMessage);
+  } catch (_error) {
+    return res.status(500).json({ message: 'Failed to update reaction' });
+  }
+};
+
+export const editMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const nextText = (req.body?.text || '').trim();
+
+    if (!nextText) {
+      return res.status(400).json({ message: 'Edited text is required' });
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+
+    if (String(message.sender) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'Only sender can edit this message' });
+    }
+
+    if (message.deleted || message.messageType !== 'text') {
+      return res.status(400).json({ message: 'This message cannot be edited' });
+    }
+
+    message.text = nextText;
+    message.edited = true;
+    message.editedAt = new Date();
+    await message.save();
+
+    const populatedMessage = await populateMessage(Message.findById(message._id));
+    emitToParticipants(req.app.get('io'), populatedMessage, 'message_updated', populatedMessage);
+
+    return res.status(200).json(populatedMessage);
+  } catch (_error) {
+    return res.status(500).json({ message: 'Failed to edit message' });
+  }
+};
+
+export const deleteMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const mode = req.body?.mode === 'everyone' ? 'everyone' : 'me';
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+
+    const currentUserId = String(req.user.id);
+    const participants = [String(message.sender), String(message.receiver)];
+    if (!participants.includes(currentUserId)) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+
+    if (mode === 'me') {
+      if (!message.deletedFor.some((id) => String(id) === currentUserId)) {
+        message.deletedFor.push(req.user.id);
+        await message.save();
+      }
+
+      req.app.get('io')?.to(currentUserId).emit('message_deleted_for_me', {
+        messageId: String(message._id),
+      });
+
+      return res.status(200).json({ ok: true, mode: 'me', messageId: String(message._id) });
+    }
+
+    if (String(message.sender) !== currentUserId) {
+      return res.status(403).json({ message: 'Only sender can delete for everyone' });
+    }
+
+    message.deleted = true;
+    message.text = '';
+    message.imageUrl = '';
+    message.reactions = [];
+    message.edited = false;
+    message.editedAt = null;
+    await message.save();
+
+    const populatedMessage = await populateMessage(Message.findById(message._id));
+    emitToParticipants(req.app.get('io'), populatedMessage, 'message_deleted_for_everyone', populatedMessage);
+
+    return res.status(200).json(populatedMessage);
+  } catch (_error) {
+    return res.status(500).json({ message: 'Failed to delete message' });
   }
 };
 

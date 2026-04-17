@@ -1,4 +1,7 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Avatar from './Avatar';
+
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢'];
 
 const formatTime = (timestamp) => {
   return new Date(timestamp).toLocaleTimeString([], {
@@ -35,12 +38,55 @@ const ChatWindow = ({
   currentUser,
   isTyping,
   onStartCall,
+  onReplyMessage,
+  onReactMessage,
+  onEditMessage,
+  onDeleteMessage,
   messagesEndRef,
   hasMore,
   onLoadOlder,
   isLoadingOlder,
   onImageClick,
 }) => {
+  const messageRefs = useRef({});
+  const longPressTimerRef = useRef(null);
+  const [openMenuMessageId, setOpenMenuMessageId] = useState(null);
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState(null);
+
+  const LONG_PRESS_MS = 450;
+
+  useEffect(() => {
+    setOpenMenuMessageId(null);
+    setReactionPickerMessageId(null);
+  }, [selectedUser?._id]);
+
+  useEffect(() => {
+    const handleOutsideClick = (event) => {
+      const inMenu = event.target?.closest?.('.message-menu-wrap');
+      const inReactionPicker = event.target?.closest?.('.message-reaction-picker');
+      if (inMenu || inReactionPicker) {
+        return;
+      }
+
+      setOpenMenuMessageId(null);
+      setReactionPickerMessageId(null);
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => clearLongPress();
+  }, []);
+
   if (!selectedUser) {
     return (
       <section className="chat-window chat-window--empty">
@@ -51,6 +97,51 @@ const ChatWindow = ({
 
   const timelineItems = [];
   let previousDateKey = '';
+
+  const summarizeReactions = useMemo(
+    () => (reactions = []) => {
+      const grouped = new Map();
+      reactions.forEach((reaction) => {
+        const emoji = reaction.emoji;
+        const existing = grouped.get(emoji) || { emoji, count: 0, reactedByMe: false };
+        existing.count += 1;
+        if (String(reaction.user?._id || reaction.user) === String(currentUser.id)) {
+          existing.reactedByMe = true;
+        }
+        grouped.set(emoji, existing);
+      });
+      return Array.from(grouped.values());
+    },
+    [currentUser.id]
+  );
+
+  const getReplyPreviewLabel = (replyMessage) => {
+    if (!replyMessage) {
+      return '';
+    }
+    if (replyMessage.deleted) {
+      return 'This message was deleted';
+    }
+    if (replyMessage.text) {
+      return replyMessage.text;
+    }
+    if (replyMessage.imageUrl) {
+      return 'Image';
+    }
+    return 'Message';
+  };
+
+  const scrollToOriginalMessage = (messageId) => {
+    if (!messageId) {
+      return;
+    }
+    const target = messageRefs.current[String(messageId)];
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('message-bubble--flash');
+      window.setTimeout(() => target.classList.remove('message-bubble--flash'), 900);
+    }
+  };
 
   messages.forEach((message) => {
     const dateObj = new Date(message.createdAt);
@@ -164,27 +255,144 @@ const ChatWindow = ({
                   ? 'Delivered'
                   : 'Sent'
               : '';
+            const reactions = summarizeReactions(message.reactions || []);
+            const canEdit = isSentByMe && !message.deleted && message.messageType === 'text';
+            const replySenderName =
+              String(message.replyTo?.sender?._id || message.replyTo?.sender) === String(currentUser.id)
+                ? 'You'
+                : message.replyTo?.sender?.name || selectedUser.name;
 
             return (
               <article key={item.key} className={`message-row ${isSentByMe ? 'message-row--me' : ''}`}>
                 <Avatar name={senderName} src={senderAvatar} size="sm" className="message-avatar" />
                 <div
-                  className={`message-bubble neu-raised ${isSentByMe ? 'message-bubble--me' : 'message-bubble--other'}`}
+                  className={`message-bubble neu-raised ${isSentByMe ? 'message-bubble--me' : 'message-bubble--other'} ${openMenuMessageId === message._id ? 'message-bubble--menu-open' : ''}`}
+                  ref={(node) => {
+                    if (node) {
+                      messageRefs.current[String(message._id)] = node;
+                    }
+                  }}
+                  onTouchStart={() => {
+                    if (isCallMessage) {
+                      return;
+                    }
+                    clearLongPress();
+                    longPressTimerRef.current = window.setTimeout(() => {
+                      setOpenMenuMessageId(message._id);
+                      setReactionPickerMessageId(null);
+                    }, LONG_PRESS_MS);
+                  }}
+                  onTouchEnd={clearLongPress}
+                  onTouchMove={clearLongPress}
                 >
+                  {!isCallMessage && (
+                    <div className="message-menu-wrap">
+                      <button
+                        type="button"
+                        className="message-menu-trigger"
+                        aria-label="Message options"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setReactionPickerMessageId(null);
+                          setOpenMenuMessageId((prev) => (prev === message._id ? null : message._id));
+                        }}
+                      >
+                        ⋮
+                      </button>
+
+                      {openMenuMessageId === message._id && (
+                        <div className="message-action-menu">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onReplyMessage?.(message);
+                              setOpenMenuMessageId(null);
+                            }}
+                            disabled={message.deleted}
+                          >
+                            Reply
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!message.deleted) {
+                                setReactionPickerMessageId((prev) => (prev === message._id ? null : message._id));
+                              }
+                              setOpenMenuMessageId(null);
+                            }}
+                            disabled={message.deleted}
+                          >
+                            React
+                          </button>
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onEditMessage?.(message);
+                                setOpenMenuMessageId(null);
+                              }}
+                            >
+                              Edit
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDeleteMessage?.(message._id, 'me');
+                              setOpenMenuMessageId(null);
+                            }}
+                            disabled={message.deleted}
+                          >
+                            Delete for me
+                          </button>
+                          {isSentByMe && (
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => {
+                                onDeleteMessage?.(message._id, 'everyone');
+                                setOpenMenuMessageId(null);
+                              }}
+                            >
+                              Delete for everyone
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="message-bubble__meta">
                     <span>{senderName}</span>
                     <span>
                       <time>{formatTime(message.createdAt)}</time>
                       {!isCallMessage && statusLabel ? ` • ${statusLabel}` : ''}
+                      {message.edited && !message.deleted ? ' • edited' : ''}
                     </span>
                   </div>
-                  {!!message.text && (
+
+                  {message.replyTo && !message.deleted && (
+                    <button
+                      type="button"
+                      className="message-reply-preview"
+                      onClick={() => scrollToOriginalMessage(message.replyTo?._id)}
+                      title="Jump to original message"
+                    >
+                      <small>{replySenderName}</small>
+                      <span>{getReplyPreviewLabel(message.replyTo)}</span>
+                    </button>
+                  )}
+
+                  {message.deleted && <p className="message-deleted">This message was deleted</p>}
+
+                  {!message.deleted && !!message.text && (
                     <p className={isCallMessage ? 'message-call-text' : ''}>
                       {isCallMessage && <span className="message-call-text__icon">📞</span>}
                       <span>{message.text}</span>
                     </p>
                   )}
-                  {!!message.imageUrl && (
+
+                  {!message.deleted && !!message.imageUrl && (
                     <button
                       type="button"
                       className="message-image-button"
@@ -192,6 +400,40 @@ const ChatWindow = ({
                     >
                       <img className="message-image" src={message.imageUrl} alt="Shared attachment" loading="lazy" />
                     </button>
+                  )}
+
+                  {reactions.length > 0 && !message.deleted && (
+                    <div className="message-reactions-list">
+                      {reactions.map((reaction) => (
+                        <button
+                          key={`${message._id}-${reaction.emoji}`}
+                          type="button"
+                          className={`message-reaction-chip ${reaction.reactedByMe ? 'message-reaction-chip--mine' : ''}`}
+                          onClick={() => onReactMessage?.(message._id, reaction.emoji)}
+                        >
+                          <span>{reaction.emoji}</span>
+                          <small>{reaction.count}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {reactionPickerMessageId === message._id && !message.deleted && (
+                    <div className="message-reaction-picker">
+                      {REACTION_EMOJIS.map((emoji) => (
+                        <button
+                          key={`${message._id}-emoji-${emoji}`}
+                          type="button"
+                          className="message-reaction-picker__item"
+                          onClick={() => {
+                            onReactMessage?.(message._id, emoji);
+                            setReactionPickerMessageId(null);
+                          }}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
                   )}
                 </div>
               </article>

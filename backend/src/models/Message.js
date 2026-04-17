@@ -1,5 +1,21 @@
 import mongoose from 'mongoose';
 
+const reactionSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    emoji: {
+      type: String,
+      enum: ['👍', '❤️', '😂', '😮', '😢'],
+      required: true,
+    },
+  },
+  { _id: false, timestamps: true }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     conversation: {
@@ -17,6 +33,11 @@ const messageSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+    },
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Message',
+      default: null,
     },
     text: {
       type: String,
@@ -64,6 +85,27 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    reactions: {
+      type: [reactionSchema],
+      default: [],
+    },
+    edited: {
+      type: Boolean,
+      default: false,
+    },
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+    deleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedFor: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: 'User',
+      default: [],
+    },
   },
   {
     timestamps: true,
@@ -74,5 +116,6 @@ messageSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
 messageSchema.index({ receiver: 1, status: 1, createdAt: -1 });
 messageSchema.index({ conversation: 1, createdAt: -1 });
 messageSchema.index({ sender: 1, receiver: 1, clientMessageId: 1 });
+messageSchema.index({ deletedFor: 1 });
 
 export default mongoose.model('Message', messageSchema);
