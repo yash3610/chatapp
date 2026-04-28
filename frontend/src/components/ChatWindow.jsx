@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Avatar from './Avatar';
+import UserProfilePanel from './UserProfilePanel';
+import GroupProfilePanel from './GroupProfilePanel';
 
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢'];
 
@@ -36,6 +38,7 @@ const ChatWindow = ({
   messages,
   selectedUser,
   isGroupChat,
+  canDirectChat = true,
   currentUser,
   isTyping,
   onStartCall,
@@ -53,6 +56,8 @@ const ChatWindow = ({
   const longPressTimerRef = useRef(null);
   const [openMenuMessageId, setOpenMenuMessageId] = useState(null);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState(null);
+  const [isProfilePanelOpen, setIsProfilePanelOpen] = useState(false);
+  const [isLoadingAction, setIsLoadingAction] = useState(false);
 
   const LONG_PRESS_MS = 450;
 
@@ -88,17 +93,6 @@ const ChatWindow = ({
     return () => clearLongPress();
   }, []);
 
-  if (!selectedUser) {
-    return (
-      <section className="chat-window chat-window--empty">
-        <p>Select a user to start chatting.</p>
-      </section>
-    );
-  }
-
-  const timelineItems = [];
-  let previousDateKey = '';
-
   const summarizeReactions = useMemo(
     () => (reactions = []) => {
       const grouped = new Map();
@@ -115,6 +109,55 @@ const ChatWindow = ({
     },
     [currentUser.id]
   );
+
+  if (!selectedUser) {
+    return (
+      <section className="chat-window chat-window--empty">
+        <p>Select a user to start chatting.</p>
+      </section>
+    );
+  }
+
+  if (!isGroupChat && !canDirectChat) {
+    return (
+      <section className="chat-window chat-window--empty">
+        <p>Send request and wait for acceptance to start chatting.</p>
+      </section>
+    );
+  }
+
+  const handleClearChat = async () => {
+    setIsLoadingAction(true);
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/messages/clear-conversation/${selectedUser._id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      window.location.reload();
+    } catch (error) {
+      console.error('Error clearing chat:', error);
+    } finally {
+      setIsLoadingAction(false);
+    }
+  };
+
+  const handleBlockUser = async () => {
+    setIsLoadingAction(true);
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/users/block/${selectedUser._id}`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      window.location.reload();
+    } catch (error) {
+      console.error('Error blocking user:', error);
+    } finally {
+      setIsLoadingAction(false);
+    }
+  };
+
+  const timelineItems = [];
+  let previousDateKey = '';
 
   const getReplyPreviewLabel = (replyMessage) => {
     if (!replyMessage) {
@@ -165,20 +208,23 @@ const ChatWindow = ({
   });
 
   return (
-    <section className="chat-window neu-raised">
-      <header className="chat-window__header">
-        <div className="chat-window__user">
-          <Avatar name={selectedUser.name} src={selectedUser.avatarUrl} size="md" />
-          <h3>{selectedUser.name}</h3>
-        </div>
-        <div className="chat-window__header-right">
-          {isGroupChat ? (
-            <span className="badge">{selectedUser.members?.length || selectedUser.memberCount || 0} members</span>
-          ) : (
-            <>
+    <div className={`chat-window-wrapper ${isProfilePanelOpen ? 'chat-window-wrapper--panel-open' : ''}`}>
+      <section className="chat-window neu-raised">
+        <header className="chat-window__header">
+          <div className="chat-window__user">
+            <Avatar name={selectedUser.name} src={selectedUser.avatarUrl} size="md" />
+            <h3>{selectedUser.name}</h3>
+          </div>
+          <div className="chat-window__header-right">
+            {isGroupChat ? (
+              <span className="badge">{selectedUser.members?.length || selectedUser.memberCount || 0} members</span>
+            ) : (
               <span className={selectedUser.isOnline ? 'badge badge--online' : 'badge'}>
                 {selectedUser.isOnline ? 'Online' : 'Offline'}
               </span>
+            )}
+            {/* Call buttons for both direct and group chats */}
+            <>
               <button
                 type="button"
                 className="btn btn--ghost neu-button call-btn"
@@ -227,9 +273,22 @@ const ChatWindow = ({
                 </svg>
               </button>
             </>
-          )}
-        </div>
-      </header>
+            {/* Info button - always shown for user or group */}
+            <button
+              type="button"
+              className="btn btn--ghost neu-button"
+              onClick={() => setIsProfilePanelOpen(!isProfilePanelOpen)}
+              title="View info"
+              aria-label="View info"
+            >
+              <svg viewBox="0 0 24 24" className="info-icon">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <line x1="12" y1="16" x2="12" y2="12" stroke="currentColor" strokeWidth="1.5" />
+                <circle cx="12" cy="8" r="0.5" fill="currentColor" />
+              </svg>
+            </button>
+          </div>
+        </header>
 
       <div className="messages">
         {hasMore && (
@@ -253,7 +312,9 @@ const ChatWindow = ({
             const { message } = item;
             const isSentByMe = String(message.sender?._id || message.sender) === String(currentUser.id);
             const isCallMessage = message.messageType === 'call';
+            const currentUserNameForAvatar = currentUser.name || currentUser.email || 'User';
             const senderName = isGroupChat ? message.sender?.name || (isSentByMe ? 'You' : 'Member') : isSentByMe ? 'You' : message.sender?.name || selectedUser.name;
+            const senderAvatarName = isSentByMe ? currentUserNameForAvatar : senderName;
             const senderAvatar = isSentByMe ? currentUser.avatarUrl : message.sender?.avatarUrl || selectedUser.avatarUrl;
             const statusLabel = isSentByMe
               ? message.status === 'seen'
@@ -271,7 +332,7 @@ const ChatWindow = ({
 
             return (
               <article key={item.key} className={`message-row ${isSentByMe ? 'message-row--me' : ''}`}>
-                <Avatar name={senderName} src={senderAvatar} size="sm" className="message-avatar" />
+                <Avatar name={senderAvatarName} src={senderAvatar} size="sm" className="message-avatar" />
                 <div
                   className={`message-bubble neu-raised ${isSentByMe ? 'message-bubble--me' : 'message-bubble--other'} ${openMenuMessageId === message._id ? 'message-bubble--menu-open' : ''}`}
                   ref={(node) => {
@@ -451,7 +512,28 @@ const ChatWindow = ({
         {isTyping && <p className="typing-indicator">{selectedUser.name} is typing...</p>}
         <div ref={messagesEndRef} />
       </div>
-    </section>
+      </section>
+
+      {!isGroupChat ? (
+        <UserProfilePanel
+          user={selectedUser}
+          currentUser={currentUser}
+          isOpen={isProfilePanelOpen}
+          onClose={() => setIsProfilePanelOpen(false)}
+          onClearChat={handleClearChat}
+          onBlockUser={handleBlockUser}
+          isLoadingAction={isLoadingAction}
+        />
+      ) : (
+        <GroupProfilePanel
+          groupId={selectedUser._id}
+          group={selectedUser}
+          currentUser={currentUser}
+          isOpen={isProfilePanelOpen}
+          onClose={() => setIsProfilePanelOpen(false)}
+        />
+      )}
+    </div>
   );
 };
 

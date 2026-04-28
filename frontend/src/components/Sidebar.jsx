@@ -4,11 +4,16 @@ import Avatar from './Avatar';
 const Sidebar = ({
   users,
   groups,
+  incomingRequests,
+  outgoingRequests,
+  discoverUsers,
   selectedUser,
   selectedGroupId,
   onSelectUser,
   onSelectGroup,
   onCreateGroup,
+  onSendRequest,
+  onRespondRequest,
   currentUserName,
   currentUserEmail,
   currentUserAvatar,
@@ -75,7 +80,7 @@ const Sidebar = ({
       setIsEditOpen(false);
       setAvatarFile(null);
       setRemoveAvatar(false);
-    } catch (_err) {
+    } catch {
       // Error feedback is handled in the dashboard toast layer.
     } finally {
       setIsSavingProfile(false);
@@ -104,6 +109,48 @@ const Sidebar = ({
 
     return groups.filter((group) => group.name.toLowerCase().includes(normalized));
   }, [groups, query]);
+
+  const filteredIncomingRequests = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) {
+      return incomingRequests;
+    }
+
+    return incomingRequests.filter((row) => {
+      return (
+        row.user?.name?.toLowerCase().includes(normalized)
+        || row.user?.email?.toLowerCase().includes(normalized)
+      );
+    });
+  }, [incomingRequests, query]);
+
+  const filteredOutgoingRequests = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) {
+      return outgoingRequests;
+    }
+
+    return outgoingRequests.filter((row) => {
+      return (
+        row.user?.name?.toLowerCase().includes(normalized)
+        || row.user?.email?.toLowerCase().includes(normalized)
+      );
+    });
+  }, [outgoingRequests, query]);
+
+  const filteredDiscoverUsers = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) {
+      return discoverUsers;
+    }
+
+    return discoverUsers.filter((person) => {
+      return (
+        person.name.toLowerCase().includes(normalized)
+        || person.email.toLowerCase().includes(normalized)
+      );
+    });
+  }, [discoverUsers, query]);
 
   const filteredAllChats = useMemo(() => {
     return [
@@ -212,10 +259,17 @@ const Sidebar = ({
       </div>
 
       <div className="search-wrap neu-inset">
+        <span className="search-wrap__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" className="search-wrap__icon-svg" focusable="false">
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+            <path d="M16 16L20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+        </span>
         <input
           className="search-bar"
           type="text"
           placeholder="Search or start a new chat"
+          aria-label="Search chats"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
@@ -229,7 +283,7 @@ const Sidebar = ({
           className={`sidebar__tab neu-button ${activeTab === 'all' ? 'sidebar__tab--active neu-inset' : 'neu-raised'}`}
           onClick={() => setActiveTab('all')}
         >
-          All
+          Contacts
         </button>
         <button
           type="button"
@@ -239,6 +293,15 @@ const Sidebar = ({
           onClick={() => setActiveTab('groups')}
         >
           Groups
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'requests'}
+          className={`sidebar__tab neu-button ${activeTab === 'requests' ? 'sidebar__tab--active neu-inset' : 'neu-raised'}`}
+          onClick={() => setActiveTab('requests')}
+        >
+          Requests
         </button>
       </div>
 
@@ -256,7 +319,7 @@ const Sidebar = ({
           </div>
         )}
 
-        {activeTab === 'all' && filteredAllChats.length === 0 && <p className="sidebar__empty">No chats found</p>}
+        {activeTab === 'all' && filteredAllChats.length === 0 && <p className="sidebar__empty">No contacts yet</p>}
         {activeTab === 'groups' && filteredGroups.length === 0 && <p className="sidebar__empty">No groups yet</p>}
 
         {activeTab === 'all' &&
@@ -328,6 +391,98 @@ const Sidebar = ({
               <small>{group.members?.length || 0} members</small>
             </button>
           ))}
+
+        {activeTab === 'requests' && (
+          <>
+            <section className="request-block">
+              <div className="sidebar__list-head">
+                <strong>Incoming</strong>
+              </div>
+              {filteredIncomingRequests.length === 0 && <p className="sidebar__empty">No pending requests</p>}
+              {filteredIncomingRequests.map((request) => (
+                <article key={request._id} className="request-card neu-inset">
+                  <div className="request-card__user">
+                    <Avatar name={request.user?.name} src={request.user?.avatarUrl} size="sm" />
+                    <div>
+                      <strong>{request.user?.name}</strong>
+                      <p>{request.user?.email}</p>
+                    </div>
+                  </div>
+                  <div className="request-card__actions">
+                    <button
+                      type="button"
+                      className="btn btn--ghost neu-button request-action"
+                      onClick={() => onRespondRequest(request._id, 'rejected')}
+                    >
+                      Reject
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--primary neu-button request-action"
+                      onClick={() => onRespondRequest(request._id, 'accepted')}
+                    >
+                      Accept
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </section>
+
+            <section className="request-block">
+              <div className="sidebar__list-head">
+                <strong>Sent</strong>
+              </div>
+              {filteredOutgoingRequests.length === 0 && <p className="sidebar__empty">No sent requests</p>}
+              {filteredOutgoingRequests.map((request) => (
+                <article key={request._id} className="request-card neu-inset">
+                  <div className="request-card__user">
+                    <Avatar name={request.user?.name} src={request.user?.avatarUrl} size="sm" />
+                    <div>
+                      <strong>{request.user?.name}</strong>
+                      <p>{request.user?.email}</p>
+                    </div>
+                  </div>
+                  <span className="request-status">Pending</span>
+                </article>
+              ))}
+            </section>
+
+            <section className="request-block">
+              <div className="sidebar__list-head">
+                <strong>Find Users</strong>
+              </div>
+              {filteredDiscoverUsers.length === 0 && <p className="sidebar__empty">No users found</p>}
+              {filteredDiscoverUsers.map((person) => {
+                const pendingByMe = person.requestStatus === 'pending' && person.requestedByMe;
+                const pendingFromThem = person.requestStatus === 'pending' && !person.requestedByMe;
+                return (
+                  <article key={person._id} className="request-card neu-inset">
+                    <div className="request-card__user">
+                      <Avatar name={person.name} src={person.avatarUrl} size="sm" />
+                      <div>
+                        <strong>{person.name}</strong>
+                        <p>{person.email}</p>
+                      </div>
+                    </div>
+                    <div className="request-card__actions">
+                      {pendingByMe && <span className="request-status">Pending</span>}
+                      {pendingFromThem && <span className="request-status">Respond in Incoming</span>}
+                      {!pendingByMe && !pendingFromThem && (
+                        <button
+                          type="button"
+                          className="btn btn--primary neu-button request-action"
+                          onClick={() => onSendRequest(person._id)}
+                        >
+                          Send Request
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </section>
+          </>
+        )}
       </div>
 
       {isEditOpen && (

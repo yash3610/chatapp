@@ -2,6 +2,7 @@ import Message from '../models/Message.js';
 import Conversation from '../models/Conversation.js';
 import Group from '../models/Group.js';
 import cloudinary from '../config/cloudinary.js';
+import { isAcceptedContact } from '../utils/contacts.js';
 import { buildParticipantKey, getOrCreateConversation } from '../utils/conversation.js';
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -80,6 +81,12 @@ export const getConversation = async (req, res) => {
     const { userId } = req.params;
     const before = req.query.before ? new Date(req.query.before) : null;
     const pageSize = Math.min(Number(req.query.limit) || DEFAULT_PAGE_SIZE, 50);
+
+    const allowed = await isAcceptedContact(req.user.id, userId);
+    if (!allowed) {
+      return res.status(403).json({ message: 'Chat allowed only with accepted contacts' });
+    }
+
     const participantKey = buildParticipantKey(req.user.id, userId);
     const existingConversation = await Conversation.findOne({ participantKey }).select('_id');
 
@@ -123,6 +130,11 @@ export const sendMessage = async (req, res) => {
 
     if (!receiverId || (!trimmedText && !imageUrl)) {
       return res.status(400).json({ message: 'Receiver and either text or image are required' });
+    }
+
+    const allowed = await isAcceptedContact(req.user.id, receiverId);
+    if (!allowed) {
+      return res.status(403).json({ message: 'Chat allowed only with accepted contacts' });
     }
 
     if (normalizedClientMessageId) {
@@ -194,6 +206,12 @@ export const markConversationAsSeen = async (req, res) => {
   try {
     const { userId } = req.params;
     const now = new Date();
+
+    const allowed = await isAcceptedContact(req.user.id, userId);
+    if (!allowed) {
+      return res.status(403).json({ message: 'Chat allowed only with accepted contacts' });
+    }
+
     const participantKey = buildParticipantKey(req.user.id, userId);
     const existingConversation = await Conversation.findOne({ participantKey }).select('_id');
 
@@ -252,6 +270,11 @@ export const relayTypingEvent = async (req, res) => {
 
     if (!to || typeof isTyping !== 'boolean') {
       return res.status(400).json({ message: 'Receiver and typing state are required' });
+    }
+
+    const allowed = await isAcceptedContact(req.user.id, to);
+    if (!allowed) {
+      return res.status(403).json({ message: 'Typing allowed only with accepted contacts' });
     }
 
     const key = typingStateKey(to, req.user.id);
@@ -532,6 +555,11 @@ export const getTypingStatus = async (req, res) => {
       return res.status(400).json({ message: 'User id is required' });
     }
 
+    const allowed = await isAcceptedContact(req.user.id, userId);
+    if (!allowed) {
+      return res.status(403).json({ message: 'Typing allowed only with accepted contacts' });
+    }
+
     const key = typingStateKey(req.user.id, userId);
     const expiresAt = typingStateMap.get(key) || 0;
     const isTyping = expiresAt > Date.now();
@@ -543,5 +571,37 @@ export const getTypingStatus = async (req, res) => {
     return res.status(200).json({ isTyping });
   } catch (_error) {
     return res.status(500).json({ message: 'Failed to read typing status' });
+  }
+};
+
+export const clearConversation = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    if (!userId) {
+      return res.status(400).json({ message: 'User id is required' });
+    }
+
+    const allowed = await isAcceptedContact(currentUserId, userId);
+    if (!allowed) {
+      return res.status(403).json({ message: 'Chat allowed only with accepted contacts' });
+    }
+
+    const key = buildParticipantKey(currentUserId, userId);
+    const conversation = await Conversation.findOne({ participantKey: key });
+
+    if (!conversation) {
+      return res.status(200).json({ message: 'Conversation cleared' });
+    }
+
+    await Message.deleteMany({ _id: { $in: conversation.messages } });
+    conversation.messages = [];
+    await conversation.save();
+
+    return res.status(200).json({ message: 'Conversation cleared successfully' });
+  } catch (error) {
+    console.error('Clear conversation error:', error);
+    return res.status(500).json({ message: 'Failed to clear conversation' });
   }
 };

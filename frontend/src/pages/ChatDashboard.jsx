@@ -103,6 +103,9 @@ const ChatDashboard = () => {
   const [users, setUsers] = useState([]);
   const [groups, setGroups] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [incomingRequests, setIncomingRequests] = useState([]);
+  const [outgoingRequests, setOutgoingRequests] = useState([]);
+  const [discoverUsers, setDiscoverUsers] = useState([]);
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
   const [, setError] = useState('');
@@ -132,6 +135,12 @@ const ChatDashboard = () => {
 
   const selectedUserId = selectedUser?._id;
   const isGroupChat = Boolean(selectedUser?.isGroup);
+  const canDirectChat = useMemo(() => {
+    if (!selectedUser || selectedUser.isGroup) {
+      return true;
+    }
+    return users.some((person) => String(person._id) === String(selectedUser._id));
+  }, [selectedUser, users]);
 
   const getDirectCallRoomId = (firstId, secondId) => {
     return [String(firstId), String(secondId)].sort().join('__');
@@ -281,7 +290,7 @@ const ChatDashboard = () => {
   };
 
   const startCall = (callType) => {
-    if (!selectedUser || !socket || isGroupChat) {
+    if (!selectedUser || !socket || isGroupChat || !canDirectChat) {
       return;
     }
 
@@ -604,14 +613,72 @@ const ChatDashboard = () => {
         return data[0] || null;
       });
     } catch (err) {
-      const message = err.response?.data?.message || 'Failed to fetch users';
+      const message = err.response?.data?.message || 'Failed to fetch contacts';
       setError(message);
       addToast(message, 'error');
     }
   };
 
+  const fetchContactRequests = async () => {
+    try {
+      const { data } = await api.get('/users/requests');
+      setIncomingRequests(data?.incoming || []);
+      setOutgoingRequests(data?.outgoing || []);
+    } catch {
+      setIncomingRequests([]);
+      setOutgoingRequests([]);
+    }
+  };
+
+  const fetchDiscoverUsers = async () => {
+    try {
+      const { data } = await api.get('/users/discover');
+      setDiscoverUsers(data || []);
+    } catch {
+      setDiscoverUsers([]);
+    }
+  };
+
+  const refreshContactData = async ({ includeContacts = true } = {}) => {
+    const tasks = [fetchContactRequests(), fetchDiscoverUsers()];
+    if (includeContacts) {
+      tasks.push(fetchUsers());
+    }
+    await Promise.all(tasks);
+  };
+
+  const handleSendRequest = async (receiverId) => {
+    if (!receiverId) {
+      return;
+    }
+
+    try {
+      await api.post('/users/requests', { receiverId });
+      addToast('Contact request sent.', 'success');
+      await refreshContactData({ includeContacts: false });
+    } catch (err) {
+      const message = err.response?.data?.message || 'Failed to send request';
+      addToast(message, 'error');
+    }
+  };
+
+  const handleRespondRequest = async (requestId, action) => {
+    if (!requestId || !action) {
+      return;
+    }
+
+    try {
+      await api.patch(`/users/requests/${requestId}`, { action });
+      addToast(action === 'accepted' ? 'Contact request accepted.' : 'Contact request rejected.', 'success');
+      await refreshContactData({ includeContacts: action === 'accepted' });
+    } catch (err) {
+      const message = err.response?.data?.message || 'Failed to update request';
+      addToast(message, 'error');
+    }
+  };
+
   useEffect(() => {
-    fetchUsers();
+    refreshContactData();
   }, []);
 
   const fetchGroups = async () => {
@@ -640,7 +707,7 @@ const ChatDashboard = () => {
   }, []);
 
   useEffect(() => {
-    if (!selectedUserId) {
+    if (!selectedUserId || (!isGroupChat && !canDirectChat)) {
       setMessages([]);
       setHasMore(false);
       setNextCursor(null);
@@ -673,10 +740,10 @@ const ChatDashboard = () => {
     };
 
     fetchConversation();
-  }, [selectedUserId, isGroupChat]);
+  }, [selectedUserId, isGroupChat, canDirectChat]);
 
   useEffect(() => {
-    if (!selectedUserId || isGroupChat) {
+    if (!selectedUserId || isGroupChat || !canDirectChat) {
       return undefined;
     }
 
@@ -692,10 +759,10 @@ const ChatDashboard = () => {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [selectedUserId, isGroupChat]);
+  }, [selectedUserId, isGroupChat, canDirectChat]);
 
   useEffect(() => {
-    if (!selectedUserId) {
+    if (!selectedUserId || (!isGroupChat && !canDirectChat)) {
       return undefined;
     }
 
@@ -715,7 +782,7 @@ const ChatDashboard = () => {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [selectedUserId, socket, isGroupChat]);
+  }, [selectedUserId, socket, isGroupChat, canDirectChat]);
 
   useEffect(() => {
     if (!socket) {
@@ -861,6 +928,46 @@ const ChatDashboard = () => {
       addToast(message, 'error');
     };
 
+    const refreshRequestState = async ({ includeContacts = false } = {}) => {
+      try {
+        const [requestsResponse, discoverResponse, contactsResponse] = await Promise.all([
+          api.get('/users/requests'),
+          api.get('/users/discover'),
+          includeContacts ? api.get('/users') : Promise.resolve(null),
+        ]);
+
+        setIncomingRequests(requestsResponse.data?.incoming || []);
+        setOutgoingRequests(requestsResponse.data?.outgoing || []);
+        setDiscoverUsers(discoverResponse.data || []);
+
+        if (contactsResponse?.data) {
+          const contacts = contactsResponse.data;
+          setUsers(contacts);
+          setSelectedUser((prev) => {
+            if (!prev || prev.isGroup) {
+              return prev;
+            }
+            return contacts.find((person) => String(person._id) === String(prev._id)) || null;
+          });
+        }
+      } catch {
+        // Keep realtime resilient even if request refresh fails.
+      }
+    };
+
+    const handleContactRequestNew = () => {
+      refreshRequestState();
+    };
+
+    const handleContactRequestUpdated = ({ status }) => {
+      refreshRequestState({ includeContacts: status === 'accepted' });
+    };
+
+    const handleContactRequestAccepted = () => {
+      addToast('You are now connected. Start chatting.', 'success');
+      refreshRequestState({ includeContacts: true });
+    };
+
     const handleCallInvite = (payload) => {
       const fromId = String(payload?.callerId || payload?.from || '');
       const roomId = payload?.roomId;
@@ -1002,6 +1109,9 @@ const ChatDashboard = () => {
     socket.on('message_updated', handleMessageUpdated);
     socket.on('message_deleted_for_everyone', handleMessageDeletedForEveryone);
     socket.on('message_deleted_for_me', handleMessageDeletedForMe);
+    socket.on('contact_request:new', handleContactRequestNew);
+    socket.on('contact_request:updated', handleContactRequestUpdated);
+    socket.on('contact_request:accepted', handleContactRequestAccepted);
 
     return () => {
       socket.off('receive_message', handleIncomingMessage);
@@ -1019,6 +1129,9 @@ const ChatDashboard = () => {
       socket.off('message_updated', handleMessageUpdated);
       socket.off('message_deleted_for_everyone', handleMessageDeletedForEveryone);
       socket.off('message_deleted_for_me', handleMessageDeletedForMe);
+      socket.off('contact_request:new', handleContactRequestNew);
+      socket.off('contact_request:updated', handleContactRequestUpdated);
+      socket.off('contact_request:accepted', handleContactRequestAccepted);
     };
   }, [
     socket,
@@ -1033,6 +1146,7 @@ const ChatDashboard = () => {
     editingMessage,
     replyContext,
     isGroupChat,
+    canDirectChat,
   ]);
 
   useEffect(() => {
@@ -1093,7 +1207,10 @@ const ChatDashboard = () => {
     const editingMessageId = meta?.editingMessageId || null;
     const replyToId = meta?.replyToId || null;
 
-    if (!selectedUserId) {
+    if (!selectedUserId || (!isGroupChat && !canDirectChat)) {
+      if (!isGroupChat) {
+        addToast('You can chat only with accepted contacts.', 'info');
+      }
       return false;
     }
 
@@ -1368,7 +1485,7 @@ const ChatDashboard = () => {
   };
 
   const handleTypingStart = () => {
-    if (!selectedUserId || typingSentRef.current) {
+    if (!selectedUserId || typingSentRef.current || (!isGroupChat && !canDirectChat)) {
       return;
     }
 
@@ -1396,7 +1513,7 @@ const ChatDashboard = () => {
   };
 
   const handleTypingStop = () => {
-    if (!selectedUserId || !typingSentRef.current) {
+    if (!selectedUserId || !typingSentRef.current || (!isGroupChat && !canDirectChat)) {
       return;
     }
 
@@ -1425,11 +1542,16 @@ const ChatDashboard = () => {
       <Sidebar
         users={users}
         groups={groups}
+        incomingRequests={incomingRequests}
+        outgoingRequests={outgoingRequests}
+        discoverUsers={discoverUsers}
         selectedUser={selectedUser}
         selectedGroupId={isGroupChat ? selectedUserId : null}
         onSelectUser={handleSelectUser}
         onSelectGroup={handleSelectGroup}
         onCreateGroup={handleCreateGroup}
+        onSendRequest={handleSendRequest}
+        onRespondRequest={handleRespondRequest}
         currentUserName={user.name}
         currentUserEmail={user.email}
         currentUserAvatar={user.avatarUrl}
@@ -1447,6 +1569,7 @@ const ChatDashboard = () => {
           messages={messages}
           selectedUser={selectedUser}
           isGroupChat={isGroupChat}
+          canDirectChat={canDirectChat}
           currentUser={user}
           isTyping={isTyping}
           onStartCall={startCall}
@@ -1462,7 +1585,8 @@ const ChatDashboard = () => {
         />
 
         <MessageInput
-          disabled={!selectedUser}
+          disabled={!selectedUser || (!isGroupChat && !canDirectChat)}
+          disabledReason={!selectedUser ? 'Select a user to chat' : !isGroupChat && !canDirectChat ? 'Send request and wait for acceptance to chat' : ''}
           onSend={sendMessage}
           onTypingStart={handleTypingStart}
           onTypingStop={handleTypingStop}

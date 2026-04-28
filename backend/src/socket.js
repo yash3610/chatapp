@@ -3,6 +3,7 @@ import Conversation from './models/Conversation.js';
 import Group from './models/Group.js';
 import Message from './models/Message.js';
 import User from './models/User.js';
+import { isAcceptedContact } from './utils/contacts.js';
 import { buildParticipantKey, getOrCreateConversation } from './utils/conversation.js';
 
 const onlineUsers = new Map();
@@ -198,6 +199,14 @@ export const initializeSocket = (io) => {
         if (!to || (!trimmedText && !imageUrl)) {
           if (typeof ack === 'function') {
             ack({ ok: false, message: 'Invalid message payload' });
+          }
+          return;
+        }
+
+        const allowed = await isAcceptedContact(currentUserId, to);
+        if (!allowed) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Chat allowed only with accepted contacts' });
           }
           return;
         }
@@ -685,6 +694,11 @@ export const initializeSocket = (io) => {
 
     socket.on('mark_seen', async ({ withUserId }) => {
       if (!withUserId) {
+        return;
+      }
+
+      const allowed = await isAcceptedContact(currentUserId, withUserId);
+      if (!allowed) {
         return;
       }
 

@@ -3,6 +3,7 @@ import EmojiPicker from 'emoji-picker-react';
 
 const MessageInput = ({
   disabled,
+  disabledReason = 'Select a user to chat',
   onSend,
   onTypingStart,
   onTypingStop,
@@ -262,7 +263,7 @@ const MessageInput = ({
           type="text"
           placeholder={
             disabled
-              ? 'Select a user to chat'
+              ? disabledReason
               : editingMessage
                 ? 'Edit message...'
                 : selectedFile
