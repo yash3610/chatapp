@@ -26,6 +26,18 @@ const userSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    phone: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 24,
+    },
+    bio: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 200,
+    },
     isOnline: {
       type: Boolean,
       default: false,

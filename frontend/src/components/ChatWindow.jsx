@@ -276,7 +276,7 @@ const ChatWindow = ({
             {/* Info button - always shown for user or group */}
             <button
               type="button"
-              className="btn btn--ghost neu-button"
+              className="btn btn--ghost neu-button call-btn"
               onClick={() => setIsProfilePanelOpen(!isProfilePanelOpen)}
               title="View info"
               aria-label="View info"

@@ -1331,7 +1331,9 @@ button {
 .profile-modal {
   width: min(460px, 100%);
   border-radius: 16px;
-  padding: 0.9rem;
+  padding: 1rem;
+  max-height: min(86vh, 760px);
+  overflow-y: auto;
 }
 
 .profile-modal--group {
@@ -1356,6 +1358,22 @@ button {
   margin-top: 0.85rem;
   display: grid;
   gap: 0.7rem;
+}
+
+.profile-form__section {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.7rem;
+  border-radius: 12px;
+  background: var(--surface-alt);
+}
+
+.profile-form__section-title {
+  margin: 0;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
 }
 
 .profile-form__preview {
@@ -1386,7 +1404,8 @@ button {
 }
 
 .profile-form input[type='text'],
-.profile-form input[type='file'] {
+.profile-form input[type='file'],
+.profile-form textarea {
   border: none;
   border-radius: 11px;
   background: var(--surface);
@@ -1395,11 +1414,21 @@ button {
   box-shadow: inset 4px 4px 9px var(--inset-dark), inset -4px -4px 9px var(--inset-light);
 }
 
+.profile-form textarea {
+  resize: vertical;
+  min-height: 76px;
+}
+
 .profile-form__actions {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.profile-form__actions .btn {
+  flex: 1 1 160px;
 }
 
 .group-selected-row {
@@ -1567,6 +1596,25 @@ button {
 }
 
 @media (max-width: 640px) {
+  .profile-modal {
+    width: 100%;
+    max-height: 90vh;
+    padding: 0.8rem;
+  }
+
+  .profile-form__preview {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .profile-form__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .profile-form__actions .btn {
+    width: 100%;
+  }
   .call-overlay__hangup-btn {
     min-height: 2.1rem;
     padding: 0 0.82rem;
@@ -1736,7 +1784,7 @@ button {
 }
 
 .user-profile-panel__content {
-  overflow: visible;
+  overflow-y: auto;
   padding-right: 0.2rem;
   display: grid;
   gap: 0.8rem;
@@ -1851,10 +1899,9 @@ button {
   flex-shrink: 0;
 }
 
-/* Ensure profile panels don't show internal scrollbars; long lists move to modal */
-.user-profile-panel__content,
+/* Allow profile panels to scroll when content overflows */
 .group-profile-panel .user-profile-actions-list {
-  overflow: visible;
+  overflow-y: auto;
 }
 
 /* Members section header with action buttons */

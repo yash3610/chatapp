@@ -468,14 +468,18 @@ const ChatDashboard = () => {
     }
   };
 
-  const handleEditProfile = async ({ name, avatarFile, removeAvatar = false }) => {
+  const handleEditProfile = async ({ name, avatarFile, removeAvatar = false, phone, bio }) => {
     const trimmedName = name?.trim() || '';
     const isNameChanged = trimmedName && trimmedName !== user.name;
+    const trimmedPhone = typeof phone === 'string' ? phone.trim() : '';
+    const trimmedBio = typeof bio === 'string' ? bio.trim() : '';
+    const isPhoneChanged = typeof phone === 'string' && trimmedPhone !== (user.phone || '');
+    const isBioChanged = typeof bio === 'string' && trimmedBio !== (user.bio || '');
     const hasAvatarFile = Boolean(avatarFile);
     const hasAvatarRemoval = Boolean(removeAvatar);
     const hasAvatarChange = hasAvatarFile || hasAvatarRemoval;
 
-    if (!isNameChanged && !hasAvatarChange) {
+    if (!isNameChanged && !hasAvatarChange && !isPhoneChanged && !isBioChanged) {
       return;
     }
 
@@ -502,6 +506,12 @@ const ChatDashboard = () => {
       if (hasAvatarChange) {
         payload.avatarUrl = nextAvatarUrl;
       }
+      if (isPhoneChanged) {
+        payload.phone = trimmedPhone;
+      }
+      if (isBioChanged) {
+        payload.bio = trimmedBio;
+      }
 
       const { data } = await api.patch('/users/me', payload);
       updateUser({
@@ -509,6 +519,8 @@ const ChatDashboard = () => {
         name: data.name,
         email: data.email,
         avatarUrl: data.avatarUrl || '',
+        phone: data.phone || '',
+        bio: data.bio || '',
       });
       setUsers((prev) =>
         prev.map((person) =>
@@ -525,6 +537,8 @@ const ChatDashboard = () => {
           ...prev,
           name: data.name,
           avatarUrl: data.avatarUrl || '',
+          phone: data.phone || '',
+          bio: data.bio || '',
         };
       });
       addToast('Profile updated successfully.', 'success');
@@ -1555,6 +1569,8 @@ const ChatDashboard = () => {
         currentUserName={user.name}
         currentUserEmail={user.email}
         currentUserAvatar={user.avatarUrl}
+        currentUserPhone={user.phone}
+        currentUserBio={user.bio}
         currentUserId={user.id}
         onLogout={logout}
         unreadCounts={unreadCounts}

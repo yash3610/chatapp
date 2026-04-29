@@ -39,6 +39,8 @@ export const register = async (req, res) => {
         name: user.name,
         email: user.email,
         avatarUrl: user.avatarUrl || '',
+        phone: user.phone || '',
+        bio: user.bio || '',
       },
     });
   } catch (error) {
@@ -73,6 +75,8 @@ export const login = async (req, res) => {
         name: user.name,
         email: user.email,
         avatarUrl: user.avatarUrl || '',
+        phone: user.phone || '',
+        bio: user.bio || '',
       },
     });
   } catch (error) {

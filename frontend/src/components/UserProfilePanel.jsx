@@ -60,6 +60,19 @@ const UserProfilePanel = ({
             </div>
           </section>
 
+          {/* Additional Info */}
+          <section className="user-profile-metadata">
+            <h5>Chat Details</h5>
+            <div className="user-profile-metadata-item">
+              <span className="label">Phone</span>
+              <span className="value">{user.phone || 'Not provided'}</span>
+            </div>
+            <div className="user-profile-metadata-item">
+              <span className="label">Bio</span>
+              <span className="value">{user.bio || 'No bio'}</span>
+            </div>
+          </section>
+
           {/* Actions Section */}
           <section className="user-profile-actions">
             <h5>Actions</h5>
@@ -83,19 +96,6 @@ const UserProfilePanel = ({
                 <span className="user-profile-action-icon">🚫</span>
                 <span>{isBlocked ? 'Blocked' : 'Block User'}</span>
               </button>
-            </div>
-          </section>
-
-          {/* Additional Info */}
-          <section className="user-profile-metadata">
-            <h5>Chat Details</h5>
-            <div className="user-profile-metadata-item">
-              <span className="label">Phone</span>
-              <span className="value">{user.phone || 'Not provided'}</span>
-            </div>
-            <div className="user-profile-metadata-item">
-              <span className="label">Bio</span>
-              <span className="value">{user.bio || 'No bio'}</span>
             </div>
           </section>
         </div>

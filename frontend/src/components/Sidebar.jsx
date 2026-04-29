@@ -17,6 +17,8 @@ const Sidebar = ({
   currentUserName,
   currentUserEmail,
   currentUserAvatar,
+  currentUserPhone,
+  currentUserBio,
   currentUserId,
   onLogout,
   unreadCounts,
@@ -29,6 +31,8 @@ const Sidebar = ({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [profileName, setProfileName] = useState(currentUserName || '');
+  const [profilePhone, setProfilePhone] = useState(currentUserPhone || '');
+  const [profileBio, setProfileBio] = useState(currentUserBio || '');
   const [avatarFile, setAvatarFile] = useState(null);
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState('');
@@ -42,6 +46,13 @@ const Sidebar = ({
   useEffect(() => {
     setProfileName(currentUserName || '');
   }, [currentUserName]);
+
+  useEffect(() => {
+    if (isEditOpen) {
+      setProfilePhone(currentUserPhone || '');
+      setProfileBio(currentUserBio || '');
+    }
+  }, [currentUserPhone, currentUserBio, isEditOpen]);
 
   useEffect(() => {
     if (!isEditOpen) {
@@ -76,6 +87,8 @@ const Sidebar = ({
         name: profileName,
         avatarFile,
         removeAvatar,
+        phone: profilePhone,
+        bio: profileBio,
       });
       setIsEditOpen(false);
       setAvatarFile(null);
@@ -513,6 +526,11 @@ const Sidebar = ({
                           ? 'Current profile photo is active.'
                           : 'No profile photo set.'}
                   </p>
+                  {(profilePhone || profileBio) && (
+                    <p>
+                      {[profilePhone || '', profileBio || ''].filter(Boolean).join(' • ')}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -525,6 +543,30 @@ const Sidebar = ({
                   onChange={(event) => setProfileName(event.target.value)}
                 />
               </label>
+
+              <div className="profile-form__section">
+                <p className="profile-form__section-title">Contact</p>
+                <label>
+                  Phone
+                  <input
+                    type="text"
+                    value={profilePhone}
+                    maxLength={24}
+                    onChange={(event) => setProfilePhone(event.target.value)}
+                    placeholder="Optional"
+                  />
+                </label>
+                <label>
+                  Bio
+                  <textarea
+                    value={profileBio}
+                    maxLength={200}
+                    rows={3}
+                    onChange={(event) => setProfileBio(event.target.value)}
+                    placeholder="Write a short bio..."
+                  />
+                </label>
+              </div>
 
               <label>
                 Profile Photo

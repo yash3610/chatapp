@@ -48,7 +48,9 @@ export const getUsers = async (req, res) => {
       return res.status(200).json([]);
     }
 
-    const users = await User.find({ _id: { $in: acceptedContactIds } }).select('name email avatarUrl isOnline lastSeen blockedUsers').lean();
+    const users = await User.find({ _id: { $in: acceptedContactIds } })
+      .select('name email avatarUrl isOnline lastSeen blockedUsers phone bio')
+      .lean();
 
     const conversations = await Conversation.find({ participants: req.user.id })
       .select('participants lastMessageAt')
@@ -93,8 +95,8 @@ export const getContactRequests = async (req, res) => {
       receiver: req.user.id,
       status: 'pending',
     })
-      .populate('sender', 'name email avatarUrl isOnline lastSeen')
-      .populate('receiver', 'name email avatarUrl isOnline lastSeen')
+      .populate('sender', 'name email avatarUrl isOnline lastSeen phone bio')
+      .populate('receiver', 'name email avatarUrl isOnline lastSeen phone bio')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -102,8 +104,8 @@ export const getContactRequests = async (req, res) => {
       sender: req.user.id,
       status: 'pending',
     })
-      .populate('sender', 'name email avatarUrl isOnline lastSeen')
-      .populate('receiver', 'name email avatarUrl isOnline lastSeen')
+      .populate('sender', 'name email avatarUrl isOnline lastSeen phone bio')
+      .populate('receiver', 'name email avatarUrl isOnline lastSeen phone bio')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -143,7 +145,7 @@ export const getDiscoverUsers = async (req, res) => {
         $nin: acceptedContactIds,
       },
     })
-      .select('name email avatarUrl isOnline lastSeen')
+      .select('name email avatarUrl isOnline lastSeen phone bio')
       .sort({ name: 1 })
       .lean();
 
@@ -207,8 +209,8 @@ export const sendContactRequest = async (req, res) => {
     }
 
     const populated = await ContactRequest.findById(request._id)
-      .populate('sender', 'name email avatarUrl isOnline lastSeen')
-      .populate('receiver', 'name email avatarUrl isOnline lastSeen')
+      .populate('sender', 'name email avatarUrl isOnline lastSeen phone bio')
+      .populate('receiver', 'name email avatarUrl isOnline lastSeen phone bio')
       .lean();
 
     const io = req.app.get('io');
@@ -293,31 +295,44 @@ export const respondToContactRequest = async (req, res) => {
 
 export const updateMyProfile = async (req, res) => {
   try {
-    const { name, avatarUrl } = req.body;
+    const { name, avatarUrl, phone, bio } = req.body;
 
-    if (!name?.trim() && typeof avatarUrl !== 'string') {
-      return res.status(400).json({ message: 'Name or avatar is required' });
+    const hasName = Boolean(name?.trim());
+    const hasAvatar = typeof avatarUrl === 'string';
+    const hasPhone = typeof phone === 'string';
+    const hasBio = typeof bio === 'string';
+
+    if (!hasName && !hasAvatar && !hasPhone && !hasBio) {
+      return res.status(400).json({ message: 'Name, avatar, phone, or bio is required' });
     }
 
     const updatePayload = {};
-    if (name?.trim()) {
+    if (hasName) {
       updatePayload.name = name.trim();
     }
-    if (typeof avatarUrl === 'string') {
+    if (hasAvatar) {
       updatePayload.avatarUrl = avatarUrl.trim();
+    }
+    if (hasPhone) {
+      updatePayload.phone = phone.trim();
+    }
+    if (hasBio) {
+      updatePayload.bio = bio.trim();
     }
 
     const updated = await User.findByIdAndUpdate(
       req.user.id,
       updatePayload,
       { new: true, runValidators: true }
-    ).select('name email avatarUrl');
+    ).select('name email avatarUrl phone bio');
 
     return res.status(200).json({
       id: updated._id,
       name: updated.name,
       email: updated.email,
       avatarUrl: updated.avatarUrl || '',
+      phone: updated.phone || '',
+      bio: updated.bio || '',
     });
   } catch (_error) {
     return res.status(500).json({ message: 'Failed to update profile' });
