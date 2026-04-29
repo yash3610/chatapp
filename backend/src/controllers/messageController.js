@@ -4,6 +4,8 @@ import Group from '../models/Group.js';
 import cloudinary from '../config/cloudinary.js';
 import { isAcceptedContact } from '../utils/contacts.js';
 import { buildParticipantKey, getOrCreateConversation } from '../utils/conversation.js';
+import http from 'http';
+import https from 'https';
 
 const DEFAULT_PAGE_SIZE = 25;
 const TYPING_TTL_MS = 5000;
@@ -14,6 +16,9 @@ const populateMessage = (query) =>
   query
     .populate('sender', 'name email avatarUrl')
     .populate('receiver', 'name email avatarUrl')
+    .populate('forwardedFrom', 'name email avatarUrl')
+    .populate('gamePlayers', 'name email avatarUrl')
+    .populate('gameWinner', 'name email avatarUrl')
     .populate('reactions.user', 'name avatarUrl')
     .populate({
       path: 'replyTo',
@@ -58,12 +63,12 @@ const toObjectIdFilter = (currentUserId, otherUserId) => ({
   ],
 });
 
-const uploadBufferToCloudinary = (fileBuffer) =>
+const uploadBufferToCloudinary = (fileBuffer, mimeType = '') =>
   new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: 'chatapp/messages',
-        resource_type: 'image',
+        resource_type: mimeType?.startsWith('image/') ? 'image' : 'raw',
       },
       (error, result) => {
         if (error) {
@@ -123,13 +128,16 @@ export const getConversation = async (req, res) => {
 
 export const sendMessage = async (req, res) => {
   try {
-    const { receiverId, text, imageUrl, clientMessageId, replyTo } = req.body;
+    const { receiverId, text, imageUrl, fileUrl, fileName, fileType, clientMessageId, replyTo } = req.body;
     const trimmedText = text?.trim() || '';
     const normalizedClientMessageId = (clientMessageId || '').toString().trim();
     const normalizedReplyTo = replyTo || null;
+    const normalizedFileUrl = (fileUrl || '').toString().trim();
+    const normalizedFileName = (fileName || '').toString().trim();
+    const normalizedFileType = (fileType || '').toString().trim();
 
-    if (!receiverId || (!trimmedText && !imageUrl)) {
-      return res.status(400).json({ message: 'Receiver and either text or image are required' });
+    if (!receiverId || (!trimmedText && !imageUrl && !normalizedFileUrl)) {
+      return res.status(400).json({ message: 'Receiver and either text, image, or file are required' });
     }
 
     const allowed = await isAcceptedContact(req.user.id, receiverId);
@@ -178,6 +186,9 @@ export const sendMessage = async (req, res) => {
       messageType: 'text',
       text: trimmedText,
       imageUrl: imageUrl || '',
+      fileUrl: normalizedFileUrl,
+      fileName: normalizedFileName,
+      fileType: normalizedFileType,
       replyTo: normalizedReplyTo,
       clientMessageId: normalizedClientMessageId,
       status: deliveredNow ? 'delivered' : 'sent',
@@ -249,18 +260,26 @@ export const markConversationAsSeen = async (req, res) => {
 export const uploadChatImage = async (req, res) => {
   try {
     if (!req.file?.buffer) {
-      return res.status(400).json({ message: 'Image file is required' });
+      return res.status(400).json({ message: 'Attachment file is required' });
     }
 
     if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
       return res.status(500).json({ message: 'Cloudinary is not configured on server' });
     }
 
-    const imageUrl = await uploadBufferToCloudinary(req.file.buffer);
+    const isImage = req.file.mimetype?.startsWith('image/');
 
-    return res.status(201).json({ imageUrl });
+    const fileUrl = await uploadBufferToCloudinary(req.file.buffer, req.file.mimetype);
+
+    return res.status(201).json({
+      imageUrl: isImage ? fileUrl : '',
+      fileUrl: isImage ? '' : fileUrl,
+      fileName: req.file.originalname || '',
+      fileType: req.file.mimetype || '',
+      isImage,
+    });
   } catch (error) {
-    return res.status(500).json({ message: error?.message || 'Failed to upload image' });
+    return res.status(500).json({ message: error?.message || 'Failed to upload attachment' });
   }
 };
 
@@ -340,13 +359,16 @@ export const getGroupConversation = async (req, res) => {
 export const sendGroupMessage = async (req, res) => {
   try {
     const { groupId } = req.params;
-    const { text, imageUrl, clientMessageId, replyTo } = req.body || {};
+    const { text, imageUrl, fileUrl, fileName, fileType, clientMessageId, replyTo } = req.body || {};
     const trimmedText = text?.trim() || '';
     const normalizedClientMessageId = (clientMessageId || '').toString().trim();
     const normalizedReplyTo = replyTo || null;
+    const normalizedFileUrl = (fileUrl || '').toString().trim();
+    const normalizedFileName = (fileName || '').toString().trim();
+    const normalizedFileType = (fileType || '').toString().trim();
 
-    if (!trimmedText && !imageUrl) {
-      return res.status(400).json({ message: 'Text or image is required' });
+    if (!trimmedText && !imageUrl && !normalizedFileUrl) {
+      return res.status(400).json({ message: 'Text, image, or file is required' });
     }
 
     const group = await Group.findOne({ _id: groupId, members: req.user.id }).select('_id members');
@@ -383,6 +405,9 @@ export const sendGroupMessage = async (req, res) => {
       messageType: 'text',
       text: trimmedText,
       imageUrl: imageUrl || '',
+      fileUrl: normalizedFileUrl,
+      fileName: normalizedFileName,
+      fileType: normalizedFileType,
       replyTo: normalizedReplyTo,
       clientMessageId: normalizedClientMessageId,
       status: 'sent',
@@ -394,6 +419,112 @@ export const sendGroupMessage = async (req, res) => {
     return res.status(201).json(populatedMessage);
   } catch (_error) {
     return res.status(500).json({ message: 'Failed to send group message' });
+  }
+};
+
+export const forwardMessage = async (req, res) => {
+  try {
+    const { messageId, receiverIds } = req.body || {};
+    if (!messageId || !Array.isArray(receiverIds) || receiverIds.length === 0) {
+      return res.status(400).json({ message: 'Message id and receivers are required' });
+    }
+
+    const sourceMessage = await Message.findById(messageId)
+      .select('sender receiver text imageUrl fileUrl fileName fileType deleted isGroup chatId messageType forwardedFrom forwardedFromMessage')
+      .lean();
+
+    if (!sourceMessage) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+
+    if (sourceMessage.deleted) {
+      return res.status(400).json({ message: 'Cannot forward a deleted message' });
+    }
+
+    const hasContent = Boolean((sourceMessage.text || '').trim() || sourceMessage.imageUrl || sourceMessage.fileUrl);
+    if (!hasContent || sourceMessage.messageType === 'call') {
+      return res.status(400).json({ message: 'Only text, image, or file messages can be forwarded' });
+    }
+
+    if (sourceMessage.isGroup) {
+      const allowed = await isGroupMember(sourceMessage.chatId, req.user.id);
+      if (!allowed) {
+        return res.status(403).json({ message: 'Not allowed to forward this message' });
+      }
+    } else {
+      const participants = [String(sourceMessage.sender), String(sourceMessage.receiver)];
+      if (!participants.includes(String(req.user.id))) {
+        return res.status(403).json({ message: 'Not allowed to forward this message' });
+      }
+    }
+
+    const uniqueReceiverIds = Array.from(
+      new Set(receiverIds.map((id) => String(id)).filter(Boolean))
+    ).filter((id) => id !== String(req.user.id));
+
+    if (uniqueReceiverIds.length === 0) {
+      return res.status(400).json({ message: 'Select at least one valid receiver' });
+    }
+
+    const io = req.app.get('io');
+    const forwardedFrom = sourceMessage.forwardedFrom || sourceMessage.sender;
+    const forwardedFromMessage = sourceMessage.forwardedFromMessage || sourceMessage._id;
+    const now = new Date();
+
+    const forwarded = [];
+    const failed = [];
+
+    for (const receiverId of uniqueReceiverIds) {
+      const allowed = await isAcceptedContact(req.user.id, receiverId);
+      if (!allowed) {
+        failed.push({ receiverId, reason: 'not_allowed' });
+        continue;
+      }
+
+      const conversation = await getOrCreateConversation(req.user.id, receiverId);
+      const receiverSockets = io?.sockets?.adapter?.rooms?.get(String(receiverId));
+      const deliveredNow = Boolean(receiverSockets?.size);
+
+      const message = await Message.create({
+        conversation: conversation._id,
+        sender: req.user.id,
+        receiver: receiverId,
+        chatId: receiverId,
+        isGroup: false,
+        messageType: 'text',
+        text: sourceMessage.text || '',
+        imageUrl: sourceMessage.imageUrl || '',
+        fileUrl: sourceMessage.fileUrl || '',
+        fileName: sourceMessage.fileName || '',
+        fileType: sourceMessage.fileType || '',
+        forwardedFrom,
+        forwardedFromMessage,
+        status: deliveredNow ? 'delivered' : 'sent',
+        deliveredAt: deliveredNow ? now : null,
+      });
+
+      await Conversation.findByIdAndUpdate(conversation._id, {
+        lastMessage: message._id,
+        lastMessageAt: message.createdAt,
+      });
+
+      const populatedMessage = await populateMessage(Message.findById(message._id));
+      forwarded.push(populatedMessage);
+
+      if (io) {
+        io.to(String(receiverId)).emit('receive_message', populatedMessage);
+        io.to(String(req.user.id)).emit('receive_message', populatedMessage);
+      }
+    }
+
+    if (forwarded.length === 0) {
+      return res.status(403).json({ message: 'No valid receivers to forward' });
+    }
+
+    return res.status(201).json({ forwarded, failed });
+  } catch (error) {
+    console.error('Forward message error', error);
+    return res.status(500).json({ message: 'Failed to forward message' });
   }
 };
 
@@ -603,5 +734,51 @@ export const clearConversation = async (req, res) => {
   } catch (error) {
     console.error('Clear conversation error:', error);
     return res.status(500).json({ message: 'Failed to clear conversation' });
+  }
+};
+
+export const downloadMessageFile = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    if (!messageId) {
+      return res.status(400).json({ message: 'Message id is required' });
+    }
+
+    const message = await Message.findById(messageId).select('sender receiver isGroup chatId fileUrl fileName fileType');
+    if (!message || !message.fileUrl) {
+      return res.status(404).json({ message: 'File not found' });
+    }
+
+    const currentUserId = String(req.user.id);
+    if (message.isGroup) {
+      const allowed = await isGroupMember(message.chatId, req.user.id);
+      if (!allowed) {
+        return res.status(403).json({ message: 'Not allowed' });
+      }
+    } else {
+      const participants = [String(message.sender), String(message.receiver)];
+      if (!participants.includes(currentUserId)) {
+        return res.status(403).json({ message: 'Not allowed' });
+      }
+    }
+
+    const filename = message.fileName || 'download';
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', message.fileType || 'application/octet-stream');
+
+    const url = new URL(message.fileUrl);
+    const client = url.protocol === 'https:' ? https : http;
+
+    client.get(url, (fileRes) => {
+      if (fileRes.statusCode && fileRes.statusCode >= 400) {
+        res.status(502).json({ message: 'Failed to fetch file' });
+        return;
+      }
+      fileRes.pipe(res);
+    }).on('error', () => {
+      res.status(502).json({ message: 'Failed to fetch file' });
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: 'Failed to download file' });
   }
 };

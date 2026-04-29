@@ -12,14 +12,24 @@ const MessageInput = ({
   editingMessage,
   onCancelReply,
   onCancelEdit,
+  onGameInvite,
+  canStartGame = false,
 }) => {
   const [text, setText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState('');
+  const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
+  const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isGameInviteOpen, setIsGameInviteOpen] = useState(false);
+  const [selectedGameType, setSelectedGameType] = useState('tic_tac_toe');
+  const [isGameInviteSending, setIsGameInviteSending] = useState(false);
   const typingTimeoutRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
+  const documentInputRef = useRef(null);
   const textInputRef = useRef(null);
   const emojiPickerRef = useRef(null);
+  const attachmentMenuRef = useRef(null);
   const selectionRef = useRef({ start: 0, end: 0 });
 
   useEffect(() => {
@@ -39,6 +49,10 @@ const MessageInput = ({
       if (!emojiPickerRef.current.contains(event.target)) {
         setShowEmojiPicker(false);
       }
+
+      if (attachmentMenuRef.current && !attachmentMenuRef.current.contains(event.target)) {
+        setIsAttachmentMenuOpen(false);
+      }
     };
 
     document.addEventListener('mousedown', handleOutsideClick);
@@ -49,8 +63,13 @@ const MessageInput = ({
 
   useEffect(() => {
     if (disabled) {
-      setShowEmojiPicker(false);
+      const timer = window.setTimeout(() => {
+        setShowEmojiPicker(false);
+        setIsAttachmentMenuOpen(false);
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
+    return undefined;
   }, [disabled]);
 
   useEffect(() => {
@@ -59,16 +78,37 @@ const MessageInput = ({
     }
 
     const editText = editingMessage.text || '';
-    setText(editText);
-    selectionRef.current = { start: editText.length, end: editText.length };
+    const raf = requestAnimationFrame(() => {
+      setText(editText);
+      selectionRef.current = { start: editText.length, end: editText.length };
 
-    requestAnimationFrame(() => {
       if (textInputRef.current) {
         textInputRef.current.focus();
         textInputRef.current.setSelectionRange(editText.length, editText.length);
       }
     });
+
+    return () => cancelAnimationFrame(raf);
   }, [editingMessage]);
+
+  useEffect(() => {
+    if (!selectedFile || selectedFile.type !== 'application/pdf') {
+      if (pdfPreviewUrl) {
+        URL.revokeObjectURL(pdfPreviewUrl);
+      }
+      setPdfPreviewUrl('');
+      setIsPdfPreviewOpen(false);
+      return undefined;
+    }
+
+    const nextUrl = URL.createObjectURL(selectedFile);
+    setPdfPreviewUrl(nextUrl);
+    setIsPdfPreviewOpen(true);
+
+    return () => {
+      URL.revokeObjectURL(nextUrl);
+    };
+  }, [selectedFile]);
 
   const scheduleTypingStop = () => {
     onTypingStart();
@@ -112,8 +152,11 @@ const MessageInput = ({
     if (sent) {
       setText('');
       setSelectedFile(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+      if (cameraInputRef.current) {
+        cameraInputRef.current.value = '';
+      }
+      if (documentInputRef.current) {
+        documentInputRef.current.value = '';
       }
       onTypingStop();
       if (editingMessage) {
@@ -125,11 +168,20 @@ const MessageInput = ({
     }
   };
 
-  const handlePickImage = () => {
+  const handlePickCamera = () => {
     if (disabled || isUploadingImage) {
       return;
     }
-    fileInputRef.current?.click();
+    cameraInputRef.current?.click();
+    setIsAttachmentMenuOpen(false);
+  };
+
+  const handlePickDocument = () => {
+    if (disabled || isUploadingImage) {
+      return;
+    }
+    documentInputRef.current?.click();
+    setIsAttachmentMenuOpen(false);
   };
 
   const handleEmojiSelect = (emojiData) => {
@@ -177,9 +229,24 @@ const MessageInput = ({
     setSelectedFile(file);
   };
 
+  const openGameInvite = () => {
+    if (!canStartGame || disabled) {
+      return;
+    }
+    setIsGameInviteOpen(true);
+    setSelectedGameType('tic_tac_toe');
+    setIsAttachmentMenuOpen(false);
+  };
+
+  const closeGameInvite = () => {
+    setIsGameInviteOpen(false);
+    setIsGameInviteSending(false);
+  };
+
   return (
     <form className="message-input neu-raised" onSubmit={handleSubmit}>
-      <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={handleImageChange} />
+      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" hidden onChange={handleImageChange} />
+      <input ref={documentInputRef} type="file" accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden onChange={handleImageChange} />
       {(replyToMessage || editingMessage) && (
         <div className="message-input__context">
           <div>
@@ -208,25 +275,74 @@ const MessageInput = ({
           </button>
         </div>
       )}
-      <button
-        className={`btn btn--ghost neu-button message-input__attach ${selectedFile ? 'message-input__attach--active' : ''}`}
-        type="button"
-        onClick={handlePickImage}
-        disabled={disabled || isUploadingImage || Boolean(editingMessage)}
-        title="Attach image"
-        aria-label="Attach image"
-      >
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <path
-            d="M16.5 6.5a4 4 0 0 0-5.7 0l-6 6a5 5 0 1 0 7.1 7.1l5.6-5.6a3 3 0 1 0-4.2-4.2l-5.3 5.3a1 1 0 1 0 1.4 1.4l4.9-4.9"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
+      {selectedFile && (
+        <div className={`message-input__attachment-preview ${pdfPreviewUrl ? 'message-input__attachment-preview--pdf' : ''}`}>
+          <div>
+            <small>Attachment</small>
+            <p>{selectedFile.name || 'File'}</p>
+          </div>
+          {pdfPreviewUrl && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => setIsPdfPreviewOpen(true)}
+            >
+              Preview
+            </button>
+          )}
+          <button
+            type="button"
+            className="message-input__context-close"
+            onClick={() => {
+              setSelectedFile(null);
+              if (pdfPreviewUrl) {
+                URL.revokeObjectURL(pdfPreviewUrl);
+                setPdfPreviewUrl('');
+              }
+              setIsPdfPreviewOpen(false);
+              if (cameraInputRef.current) {
+                cameraInputRef.current.value = '';
+              }
+              if (documentInputRef.current) {
+                documentInputRef.current.value = '';
+              }
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      )}
+      <div className="message-input__attach-menu" ref={attachmentMenuRef}>
+        <button
+          className={`btn btn--ghost neu-button message-input__attach ${selectedFile ? 'message-input__attach--active' : ''}`}
+          type="button"
+          onClick={() => setIsAttachmentMenuOpen((prev) => !prev)}
+          disabled={disabled || isUploadingImage || Boolean(editingMessage)}
+          title="Open attachments"
+          aria-label="Open attachments"
+        >
+          <span className="message-input__attach-plus">+</span>
+        </button>
+        {isAttachmentMenuOpen && (
+          <div className="attachment-menu">
+            <button type="button" className="attachment-menu__item" onClick={handlePickDocument}>
+              📄 Document
+            </button>
+            <button type="button" className="attachment-menu__item" onClick={handlePickCamera}>
+              📷 Camera
+            </button>
+            <button
+              type="button"
+              className="attachment-menu__item"
+              onClick={openGameInvite}
+              disabled={!canStartGame}
+              title={!canStartGame ? 'Games are available in direct chats' : 'Start a game'}
+            >
+              🎮 Game
+            </button>
+          </div>
+        )}
+      </div>
 
       <div className="message-input__emoji-wrap" ref={emojiPickerRef}>
         <button
@@ -285,6 +401,90 @@ const MessageInput = ({
       >
         {isUploadingImage ? 'Uploading...' : editingMessage ? 'Save' : 'Send'}
       </button>
+
+      {isGameInviteOpen && (
+        <div className="modal-overlay" onClick={closeGameInvite} role="presentation">
+          <div className="add-members-modal" onClick={(event) => event.stopPropagation()}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem' }}>
+                <h4>Start a game</h4>
+                <button
+                  type="button"
+                  className="member-menu-btn"
+                  onClick={closeGameInvite}
+                  title="Close"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gap: '0.6rem' }}>
+              <button
+                type="button"
+                className={`game-option ${selectedGameType === 'tic_tac_toe' ? 'is-selected' : ''}`}
+                onClick={() => setSelectedGameType('tic_tac_toe')}
+              >
+                <span className="game-option__title">Tic Tac Toe</span>
+                <small>Classic 2-player grid</small>
+              </button>
+              <button
+                type="button"
+                className={`game-option ${selectedGameType === 'quiz' ? 'is-selected' : ''}`}
+                onClick={() => setSelectedGameType('quiz')}
+              >
+                <span className="game-option__title">Quiz</span>
+                <small>Take turns answering questions</small>
+              </button>
+            </div>
+            <div>
+              <button type="button" className="btn btn--ghost" onClick={closeGameInvite}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={isGameInviteSending}
+                onClick={async () => {
+                  setIsGameInviteSending(true);
+                  const ok = await onGameInvite?.(selectedGameType);
+                  if (ok) {
+                    closeGameInvite();
+                  }
+                  setIsGameInviteSending(false);
+                }}
+              >
+                Send invite
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isPdfPreviewOpen && pdfPreviewUrl && (
+        <div className="modal-overlay" onClick={() => setIsPdfPreviewOpen(false)} role="presentation">
+          <div className="file-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="file-preview-modal__header">
+              <div>
+                <h4>{selectedFile?.name || 'PDF Preview'}</h4>
+                <p>PDF document</p>
+              </div>
+              <button
+                type="button"
+                className="member-menu-btn"
+                onClick={() => setIsPdfPreviewOpen(false)}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <iframe
+              className="file-preview-modal__frame"
+              src={`${pdfPreviewUrl}#page=1&view=FitH`}
+              title="PDF preview"
+            />
+          </div>
+        </div>
+      )}
     </form>
   );
 };

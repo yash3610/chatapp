@@ -49,6 +49,16 @@ const messageSchema = new mongoose.Schema(
       ref: 'Message',
       default: null,
     },
+    forwardedFrom: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    forwardedFromMessage: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Message',
+      default: null,
+    },
     text: {
       type: String,
       default: '',
@@ -60,9 +70,24 @@ const messageSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    fileUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    fileName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    fileType: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     messageType: {
       type: String,
-      enum: ['text', 'call'],
+      enum: ['text', 'call', 'game'],
       default: 'text',
       index: true,
     },
@@ -115,6 +140,40 @@ const messageSchema = new mongoose.Schema(
       type: [mongoose.Schema.Types.ObjectId],
       ref: 'User',
       default: [],
+    },
+    gameId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Game',
+      default: null,
+      index: true,
+    },
+    gameType: {
+      type: String,
+      enum: ['', 'tic_tac_toe', 'quiz'],
+      default: '',
+      trim: true,
+    },
+    gameEvent: {
+      type: String,
+      enum: ['', 'invite', 'accepted', 'result'],
+      default: '',
+      trim: true,
+    },
+    gameStatus: {
+      type: String,
+      enum: ['', 'invited', 'active', 'finished', 'cancelled'],
+      default: '',
+      trim: true,
+    },
+    gamePlayers: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: 'User',
+      default: [],
+    },
+    gameWinner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
   },
   {

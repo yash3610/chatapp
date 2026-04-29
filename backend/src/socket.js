@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import Conversation from './models/Conversation.js';
 import Group from './models/Group.js';
+import Game from './models/Game.js';
 import Message from './models/Message.js';
 import User from './models/User.js';
 import { isAcceptedContact } from './utils/contacts.js';
@@ -13,6 +14,8 @@ const populateMessage = (query) =>
   query
     .populate('sender', 'name email avatarUrl')
     .populate('receiver', 'name email avatarUrl')
+    .populate('gamePlayers', 'name email avatarUrl')
+    .populate('gameWinner', 'name email avatarUrl')
     .populate('reactions.user', 'name avatarUrl')
     .populate({
       path: 'replyTo',
@@ -84,6 +87,99 @@ const buildCallLog = (callType, eventType, reason) => {
   }
 
   return { text: `${label} call update`, callEvent: 'ended' };
+};
+
+const QUIZ_QUESTIONS = [
+  {
+    text: 'Which planet is known as the Red Planet?',
+    options: ['Earth', 'Mars', 'Jupiter', 'Venus'],
+    correctIndex: 1,
+  },
+  {
+    text: 'What is the capital of Japan?',
+    options: ['Seoul', 'Kyoto', 'Tokyo', 'Osaka'],
+    correctIndex: 2,
+  },
+  {
+    text: 'Which language runs in a web browser?',
+    options: ['Python', 'C++', 'Java', 'JavaScript'],
+    correctIndex: 3,
+  },
+  {
+    text: 'How many continents are there?',
+    options: ['5', '6', '7', '8'],
+    correctIndex: 2,
+  },
+  {
+    text: 'What is the chemical symbol for water?',
+    options: ['CO2', 'H2O', 'O2', 'NaCl'],
+    correctIndex: 1,
+  },
+  {
+    text: 'Which ocean is the largest?',
+    options: ['Atlantic', 'Indian', 'Pacific', 'Arctic'],
+    correctIndex: 2,
+  },
+];
+
+const pickQuizQuestions = (count = 5) => {
+  const shuffled = [...QUIZ_QUESTIONS].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, Math.max(1, Math.min(count, shuffled.length)));
+};
+
+const sanitizeQuizQuestions = (questions = []) =>
+  questions.map(({ text, options }) => ({ text, options }));
+
+const getTicTacToeWinner = (board = []) => {
+  const lines = [
+    [0, 1, 2],
+    [3, 4, 5],
+    [6, 7, 8],
+    [0, 3, 6],
+    [1, 4, 7],
+    [2, 5, 8],
+    [0, 4, 8],
+    [2, 4, 6],
+  ];
+
+  for (const [a, b, c] of lines) {
+    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+      return board[a];
+    }
+  }
+
+  return null;
+};
+
+const buildGamePayload = (game) => {
+  if (!game) {
+    return null;
+  }
+
+  const payload = {
+    _id: String(game._id),
+    gameType: game.gameType,
+    status: game.status,
+    players: game.players.map((id) => String(id)),
+    createdBy: String(game.createdBy),
+    currentTurn: game.currentTurn ? String(game.currentTurn) : null,
+    winner: game.winner ? String(game.winner) : null,
+  };
+
+  if (game.gameType === 'tic_tac_toe') {
+    payload.ticTacToe = { board: game.ticTacToe?.board || Array(9).fill('') };
+  }
+
+  if (game.gameType === 'quiz') {
+    payload.quiz = {
+      currentIndex: game.quiz?.currentIndex || 0,
+      total: game.quiz?.questions?.length || 0,
+      questions: sanitizeQuizQuestions(game.quiz?.questions || []),
+      scores: Object.fromEntries(game.quiz?.scores || []),
+    };
+  }
+
+  return payload;
 };
 
 export const initializeSocket = (io) => {
@@ -189,14 +285,55 @@ export const initializeSocket = (io) => {
       io.to(currentUserId).emit('receive_message', populated);
     };
 
+    const persistGameMessage = async ({ to, game, gameEvent, gameStatus, gameWinner = null }) => {
+      if (!to || !game) {
+        return null;
+      }
+
+      const conversation = await getOrCreateConversation(currentUserId, to);
+
+      const message = await Message.create({
+        conversation: conversation._id,
+        sender: currentUserId,
+        receiver: to,
+        chatId: to,
+        isGroup: false,
+        messageType: 'game',
+        text: '',
+        imageUrl: '',
+        status: isUserOnline(to) ? 'delivered' : 'sent',
+        deliveredAt: isUserOnline(to) ? new Date() : null,
+        gameId: game._id,
+        gameType: game.gameType,
+        gameEvent,
+        gameStatus,
+        gamePlayers: game.players,
+        gameWinner,
+        clientMessageId: `game-${game._id}-${gameEvent}-${Date.now()}`,
+      });
+
+      await Conversation.findByIdAndUpdate(conversation._id, {
+        lastMessage: message._id,
+        lastMessageAt: message.createdAt,
+      });
+
+      const populated = await populateMessage(Message.findById(message._id));
+      io.to(String(to)).emit('receive_message', populated);
+      io.to(currentUserId).emit('receive_message', populated);
+      return populated;
+    };
+
     socket.on('private_message', async (payload, ack) => {
       try {
-        const { to, text, imageUrl, clientMessageId, replyTo } = payload || {};
+        const { to, text, imageUrl, fileUrl, fileName, fileType, clientMessageId, replyTo } = payload || {};
         const trimmedText = text?.trim() || '';
         const normalizedClientMessageId = (clientMessageId || '').toString().trim();
         const normalizedReplyTo = replyTo || null;
+        const normalizedFileUrl = (fileUrl || '').toString().trim();
+        const normalizedFileName = (fileName || '').toString().trim();
+        const normalizedFileType = (fileType || '').toString().trim();
 
-        if (!to || (!trimmedText && !imageUrl)) {
+        if (!to || (!trimmedText && !imageUrl && !normalizedFileUrl)) {
           if (typeof ack === 'function') {
             ack({ ok: false, message: 'Invalid message payload' });
           }
@@ -261,6 +398,9 @@ export const initializeSocket = (io) => {
           messageType: 'text',
           text: trimmedText,
           imageUrl: imageUrl || '',
+          fileUrl: normalizedFileUrl,
+          fileName: normalizedFileName,
+          fileType: normalizedFileType,
           replyTo: normalizedReplyTo,
           clientMessageId: normalizedClientMessageId,
           status: deliveredNow ? 'delivered' : 'sent',
@@ -321,12 +461,15 @@ export const initializeSocket = (io) => {
 
     socket.on('group_message', async (payload, ack) => {
       try {
-        const { groupId, text, imageUrl, clientMessageId, replyTo } = payload || {};
+        const { groupId, text, imageUrl, fileUrl, fileName, fileType, clientMessageId, replyTo } = payload || {};
         const trimmedText = text?.trim() || '';
         const normalizedClientMessageId = (clientMessageId || '').toString().trim();
         const normalizedReplyTo = replyTo || null;
+        const normalizedFileUrl = (fileUrl || '').toString().trim();
+        const normalizedFileName = (fileName || '').toString().trim();
+        const normalizedFileType = (fileType || '').toString().trim();
 
-        if (!groupId || (!trimmedText && !imageUrl)) {
+        if (!groupId || (!trimmedText && !imageUrl && !normalizedFileUrl)) {
           if (typeof ack === 'function') {
             ack({ ok: false, message: 'Invalid group message payload' });
           }
@@ -377,6 +520,9 @@ export const initializeSocket = (io) => {
           messageType: 'text',
           text: trimmedText,
           imageUrl: imageUrl || '',
+          fileUrl: normalizedFileUrl,
+          fileName: normalizedFileName,
+          fileType: normalizedFileType,
           replyTo: normalizedReplyTo,
           clientMessageId: normalizedClientMessageId,
           status: 'sent',
@@ -391,6 +537,376 @@ export const initializeSocket = (io) => {
       } catch {
         if (typeof ack === 'function') {
           ack({ ok: false, message: 'Failed to send group message' });
+        }
+      }
+    });
+
+    socket.on('game_invite', async ({ to, gameType }, ack) => {
+      try {
+        if (!to || !['tic_tac_toe', 'quiz'].includes(gameType)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid game invite' });
+          }
+          return;
+        }
+
+        const allowed = await isAcceptedContact(currentUserId, to);
+        if (!allowed) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Chat allowed only with accepted contacts' });
+          }
+          return;
+        }
+
+        const players = [currentUserId, String(to)];
+        const game = await Game.create({
+          gameType,
+          status: 'invited',
+          players,
+          createdBy: currentUserId,
+          currentTurn: null,
+          ticTacToe: gameType === 'tic_tac_toe' ? { board: Array(9).fill('') } : undefined,
+          quiz: gameType === 'quiz'
+            ? {
+                questions: pickQuizQuestions(5),
+                currentIndex: 0,
+                scores: new Map(players.map((id) => [String(id), 0])),
+              }
+            : undefined,
+        });
+
+        const inviteMessage = await persistGameMessage({
+          to,
+          game,
+          gameEvent: 'invite',
+          gameStatus: 'invited',
+        });
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, game: buildGamePayload(game), message: inviteMessage });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to send game invite' });
+        }
+      }
+    });
+
+    socket.on('game_accept', async ({ gameId }, ack) => {
+      try {
+        if (!gameId) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game id is required' });
+          }
+          return;
+        }
+
+        const game = await Game.findById(gameId);
+        if (!game) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game not found' });
+          }
+          return;
+        }
+
+        const players = game.players.map((id) => String(id));
+        if (!players.includes(currentUserId)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed' });
+          }
+          return;
+        }
+
+        if (game.status !== 'invited') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game already started' });
+          }
+          return;
+        }
+
+        const randomTurn = players[Math.floor(Math.random() * players.length)];
+        game.status = 'active';
+        game.currentTurn = randomTurn;
+
+        if (game.gameType === 'quiz') {
+          const scores = new Map(players.map((id) => [String(id), 0]));
+          game.quiz = {
+            questions: game.quiz?.questions?.length ? game.quiz.questions : pickQuizQuestions(5),
+            currentIndex: 0,
+            scores,
+          };
+        }
+
+        await game.save();
+
+        const otherPlayer = players.find((id) => id !== currentUserId);
+        await persistGameMessage({
+          to: otherPlayer,
+          game,
+          gameEvent: 'accepted',
+          gameStatus: 'active',
+        });
+
+        const payload = buildGamePayload(game);
+        players.forEach((playerId) => {
+          io.to(String(playerId)).emit('game_update', payload);
+        });
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, game: payload });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to accept game' });
+        }
+      }
+    });
+
+    socket.on('game_move', async ({ gameId, index }, ack) => {
+      try {
+        if (!gameId || typeof index !== 'number') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid move payload' });
+          }
+          return;
+        }
+
+        const game = await Game.findById(gameId);
+        if (!game || game.gameType !== 'tic_tac_toe') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game not found' });
+          }
+          return;
+        }
+
+        const players = game.players.map((id) => String(id));
+        if (!players.includes(currentUserId)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed' });
+          }
+          return;
+        }
+
+        if (game.status !== 'active') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game is not active' });
+          }
+          return;
+        }
+
+        if (String(game.currentTurn) !== currentUserId) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not your turn' });
+          }
+          return;
+        }
+
+        if (index < 0 || index > 8) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid move' });
+          }
+          return;
+        }
+
+        const board = Array.isArray(game.ticTacToe?.board) ? [...game.ticTacToe.board] : Array(9).fill('');
+        if (board[index]) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Cell already filled' });
+          }
+          return;
+        }
+
+        const marker = players[0] === currentUserId ? 'X' : 'O';
+        board[index] = marker;
+        game.ticTacToe = { board };
+
+        const winnerMarker = getTicTacToeWinner(board);
+        const boardFull = board.every((cell) => cell);
+
+        if (winnerMarker || boardFull) {
+          game.status = 'finished';
+          if (winnerMarker) {
+            const winnerId = winnerMarker === 'X' ? players[0] : players[1];
+            game.winner = winnerId;
+          } else {
+            game.winner = null;
+          }
+          game.currentTurn = null;
+        } else {
+          const nextTurn = players.find((id) => id !== currentUserId);
+          game.currentTurn = nextTurn;
+        }
+
+        await game.save();
+
+        const payload = buildGamePayload(game);
+        players.forEach((playerId) => {
+          io.to(String(playerId)).emit('game_update', payload);
+        });
+
+        if (game.status === 'finished') {
+          const otherPlayer = players.find((id) => id !== currentUserId);
+          await persistGameMessage({
+            to: otherPlayer,
+            game,
+            gameEvent: 'result',
+            gameStatus: 'finished',
+            gameWinner: game.winner,
+          });
+          players.forEach((playerId) => {
+            io.to(String(playerId)).emit('game_end', payload);
+          });
+        }
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, game: payload });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to apply move' });
+        }
+      }
+    });
+
+    socket.on('game_answer', async ({ gameId, answerIndex }, ack) => {
+      try {
+        if (!gameId || typeof answerIndex !== 'number') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Invalid answer payload' });
+          }
+          return;
+        }
+
+        const game = await Game.findById(gameId);
+        if (!game || game.gameType !== 'quiz') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game not found' });
+          }
+          return;
+        }
+
+        const players = game.players.map((id) => String(id));
+        if (!players.includes(currentUserId)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed' });
+          }
+          return;
+        }
+
+        if (game.status !== 'active') {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game is not active' });
+          }
+          return;
+        }
+
+        if (String(game.currentTurn) !== currentUserId) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not your turn' });
+          }
+          return;
+        }
+
+        const currentIndex = game.quiz?.currentIndex || 0;
+        const questions = game.quiz?.questions || [];
+        const question = questions[currentIndex];
+
+        if (!question) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Question not found' });
+          }
+          return;
+        }
+
+        const scores = new Map(game.quiz?.scores || []);
+        const currentScore = scores.get(currentUserId) || 0;
+        if (answerIndex === question.correctIndex) {
+          scores.set(currentUserId, currentScore + 1);
+        }
+
+        const nextIndex = currentIndex + 1;
+        const isFinished = nextIndex >= questions.length;
+
+        if (isFinished) {
+          game.status = 'finished';
+          game.currentTurn = null;
+          game.quiz = { ...game.quiz, currentIndex: nextIndex, scores };
+
+          const scoreA = scores.get(players[0]) || 0;
+          const scoreB = scores.get(players[1]) || 0;
+          if (scoreA === scoreB) {
+            game.winner = null;
+          } else {
+            game.winner = scoreA > scoreB ? players[0] : players[1];
+          }
+        } else {
+          const nextTurn = players.find((id) => id !== currentUserId);
+          game.currentTurn = nextTurn;
+          game.quiz = { ...game.quiz, currentIndex: nextIndex, scores };
+        }
+
+        await game.save();
+
+        const payload = buildGamePayload(game);
+        players.forEach((playerId) => {
+          io.to(String(playerId)).emit('game_update', payload);
+        });
+
+        if (game.status === 'finished') {
+          const otherPlayer = players.find((id) => id !== currentUserId);
+          await persistGameMessage({
+            to: otherPlayer,
+            game,
+            gameEvent: 'result',
+            gameStatus: 'finished',
+            gameWinner: game.winner,
+          });
+          players.forEach((playerId) => {
+            io.to(String(playerId)).emit('game_end', payload);
+          });
+        }
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, game: payload });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to submit answer' });
+        }
+      }
+    });
+
+    socket.on('game_get', async ({ gameId }, ack) => {
+      try {
+        if (!gameId) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game id is required' });
+          }
+          return;
+        }
+
+        const game = await Game.findById(gameId);
+        if (!game) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Game not found' });
+          }
+          return;
+        }
+
+        const players = game.players.map((id) => String(id));
+        if (!players.includes(currentUserId)) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, message: 'Not allowed' });
+          }
+          return;
+        }
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, game: buildGamePayload(game) });
+        }
+      } catch {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'Failed to fetch game' });
         }
       }
     });

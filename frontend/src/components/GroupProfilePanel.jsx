@@ -93,6 +93,20 @@ const GroupProfilePanel = ({ groupId, group, currentUser, isOpen, onClose }) => 
     }
   };
 
+  const handleRemoveAdmin = async (memberId) => {
+    if (!confirm('Remove this member from admin?')) return;
+    setLoading(true);
+    try {
+      const { data } = await api.post(`/groups/${groupId}/remove-admin`, { memberId });
+      setDetails(data);
+      setOpenMenuId(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const filteredDiscover = discoverList.filter((p) => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
@@ -121,7 +135,11 @@ const GroupProfilePanel = ({ groupId, group, currentUser, isOpen, onClose }) => 
     );
   }
 
-  const isAdmin = String(details.admin?._id || details.admin) === String(currentUser.id);
+  const adminsList = Array.isArray(details.admins) && details.admins.length > 0
+    ? details.admins
+    : (details.admin ? [details.admin] : []);
+  const adminIds = adminsList.map((admin) => String(admin?._id || admin));
+  const isAdmin = adminIds.includes(String(currentUser.id));
 
   return (
     <aside className="group-profile-panel neu-raised">
@@ -170,8 +188,10 @@ const GroupProfilePanel = ({ groupId, group, currentUser, isOpen, onClose }) => 
           </div>
           <div className="user-profile-actions-list">
             {details.members?.map((m) => {
-              const isThisAdmin = String(details.admin?._id || details.admin) === String(m._id);
+              const isThisAdmin = adminIds.includes(String(m._id));
               const isThisCurrentUser = String(m._id) === String(currentUser.id);
+              const canRemoveAdmin = isThisAdmin && adminIds.length > 1;
+              const canRemoveThisMember = !isThisAdmin || adminIds.length > 1;
               return (
                 <div key={m._id} className="member-item">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flex: 1, minWidth: 0 }}>
@@ -184,7 +204,7 @@ const GroupProfilePanel = ({ groupId, group, currentUser, isOpen, onClose }) => 
                       <small style={{ color: 'var(--muted)' }}>{m.email}</small>
                     </div>
                   </div>
-                  {isAdmin && !isThisCurrentUser && !isThisAdmin && (
+                  {isAdmin && !isThisCurrentUser && (
                     <div className="member-menu-wrapper" ref={menuRef}>
                       <button
                         type="button"
@@ -214,17 +234,32 @@ const GroupProfilePanel = ({ groupId, group, currentUser, isOpen, onClose }) => 
                             right: `${menuPos.right}px`,
                           }}
                         >
-                          <button
-                            type="button"
-                            className="member-menu-item"
-                            onClick={() => { handleMakeAdmin(m._id); setOpenMenuId(null); }}
-                          >
-                            Make Admin
-                          </button>
+                          {!isThisAdmin && (
+                            <button
+                              type="button"
+                              className="member-menu-item"
+                              onClick={() => { handleMakeAdmin(m._id); setOpenMenuId(null); }}
+                            >
+                              Make Admin
+                            </button>
+                          )}
+                          {isThisAdmin && (
+                            <button
+                              type="button"
+                              className="member-menu-item"
+                              onClick={() => { handleRemoveAdmin(m._id); setOpenMenuId(null); }}
+                              disabled={!canRemoveAdmin}
+                              title={!canRemoveAdmin ? 'At least one admin must remain' : 'Remove admin'}
+                            >
+                              Remove Admin
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="member-menu-item danger"
                             onClick={() => { handleRemove(m._id); setOpenMenuId(null); }}
+                            disabled={!canRemoveThisMember}
+                            title={!canRemoveThisMember ? 'At least one admin must remain' : 'Remove member'}
                           >
                             Remove
                           </button>

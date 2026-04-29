@@ -123,6 +123,7 @@ const ChatDashboard = () => {
   const [outgoingCall, setOutgoingCall] = useState(null);
   const [replyContext, setReplyContext] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
+  const [activeGame, setActiveGame] = useState(null);
 
   const messagesEndRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
@@ -1108,6 +1109,18 @@ const ChatDashboard = () => {
       }
     };
 
+    const handleGameUpdate = (game) => {
+      if (game?._id) {
+        setActiveGame(game);
+      }
+    };
+
+    const handleGameEnd = (game) => {
+      if (game?._id) {
+        setActiveGame(game);
+      }
+    };
+
     socket.on('receive_message', handleIncomingMessage);
     socket.on('typing', handleTyping);
     socket.on('group_typing', handleGroupTyping);
@@ -1123,6 +1136,8 @@ const ChatDashboard = () => {
     socket.on('message_updated', handleMessageUpdated);
     socket.on('message_deleted_for_everyone', handleMessageDeletedForEveryone);
     socket.on('message_deleted_for_me', handleMessageDeletedForMe);
+    socket.on('game_update', handleGameUpdate);
+    socket.on('game_end', handleGameEnd);
     socket.on('contact_request:new', handleContactRequestNew);
     socket.on('contact_request:updated', handleContactRequestUpdated);
     socket.on('contact_request:accepted', handleContactRequestAccepted);
@@ -1143,6 +1158,8 @@ const ChatDashboard = () => {
       socket.off('message_updated', handleMessageUpdated);
       socket.off('message_deleted_for_everyone', handleMessageDeletedForEveryone);
       socket.off('message_deleted_for_me', handleMessageDeletedForMe);
+      socket.off('game_update', handleGameUpdate);
+      socket.off('game_end', handleGameEnd);
       socket.off('contact_request:new', handleContactRequestNew);
       socket.off('contact_request:updated', handleContactRequestUpdated);
       socket.off('contact_request:accepted', handleContactRequestAccepted);
@@ -1271,6 +1288,9 @@ const ChatDashboard = () => {
     shouldAutoScrollRef.current = true;
 
     let imageUrl = '';
+    let fileUrl = '';
+    let fileName = '';
+    let fileType = '';
 
     if (imageFile) {
       try {
@@ -1284,9 +1304,12 @@ const ChatDashboard = () => {
           },
         });
 
-        imageUrl = data.imageUrl;
+        imageUrl = data.imageUrl || '';
+        fileUrl = data.fileUrl || '';
+        fileName = data.fileName || '';
+        fileType = data.fileType || '';
       } catch (err) {
-        const message = err.response?.data?.message || 'Image upload failed';
+        const message = err.response?.data?.message || 'Attachment upload failed';
         setError(message);
         addToast(message, 'error');
         setIsUploadingImage(false);
@@ -1303,6 +1326,9 @@ const ChatDashboard = () => {
               groupId: selectedUserId,
               text: trimmedText,
               imageUrl,
+              fileUrl,
+              fileName,
+              fileType,
               clientMessageId,
               replyTo: replyToId,
             }).then((response) => response.message)
@@ -1310,6 +1336,9 @@ const ChatDashboard = () => {
               to: selectedUserId,
               text: trimmedText,
               imageUrl,
+              fileUrl,
+              fileName,
+              fileType,
               clientMessageId,
               replyTo: replyToId,
             });
@@ -1335,6 +1364,9 @@ const ChatDashboard = () => {
             groupId: selectedUserId,
             text: trimmedText,
             imageUrl,
+            fileUrl,
+            fileName,
+            fileType,
             clientMessageId,
             replyTo: replyToId,
           }).then((response) => response.message)
@@ -1342,6 +1374,9 @@ const ChatDashboard = () => {
             to: selectedUserId,
             text: trimmedText,
             imageUrl,
+            fileUrl,
+            fileName,
+            fileType,
             clientMessageId,
             replyTo: replyToId,
           });
@@ -1360,6 +1395,9 @@ const ChatDashboard = () => {
           ? await api.post(`/messages/group/${selectedUserId}`, {
               text: trimmedText,
               imageUrl,
+              fileUrl,
+              fileName,
+              fileType,
               clientMessageId,
               replyTo: replyToId,
             })
@@ -1367,6 +1405,9 @@ const ChatDashboard = () => {
               receiverId: selectedUserId,
               text: trimmedText,
               imageUrl,
+              fileUrl,
+              fileName,
+              fileType,
               clientMessageId,
               replyTo: replyToId,
             });
@@ -1474,6 +1515,113 @@ const ChatDashboard = () => {
     }
     setReplyContext(null);
     setEditingMessage(message);
+  };
+
+  const handleGameInvite = async (gameType) => {
+    if (!selectedUserId || isGroupChat || !canDirectChat) {
+      addToast('Games are available only in direct chats.', 'info');
+      return false;
+    }
+
+    try {
+      await waitForSocketConnect(socket);
+      const response = await emitSocketAck('game_invite', { to: selectedUserId, gameType });
+      if (response?.game) {
+        setActiveGame(response.game);
+      }
+      addToast('Game invite sent.', 'success');
+      return true;
+    } catch (err) {
+      addToast(err.message || 'Failed to send game invite', 'error');
+      return false;
+    }
+  };
+
+  const handleGameAccept = async (gameId) => {
+    if (!gameId) {
+      return false;
+    }
+
+    try {
+      await waitForSocketConnect(socket);
+      const response = await emitSocketAck('game_accept', { gameId });
+      if (response?.game) {
+        setActiveGame(response.game);
+      }
+      addToast('Game accepted. Good luck!', 'success');
+      return true;
+    } catch (err) {
+      addToast(err.message || 'Failed to accept game', 'error');
+      return false;
+    }
+  };
+
+  const handleOpenGame = async (gameId) => {
+    if (!gameId) {
+      return false;
+    }
+
+    try {
+      await waitForSocketConnect(socket);
+      const response = await emitSocketAck('game_get', { gameId });
+      if (response?.game) {
+        setActiveGame(response.game);
+      }
+      return true;
+    } catch (err) {
+      addToast(err.message || 'Failed to open game', 'error');
+      return false;
+    }
+  };
+
+  const handleGameMove = async (gameId, index) => {
+    if (!gameId) {
+      return;
+    }
+
+    try {
+      const response = await emitSocketAck('game_move', { gameId, index });
+      if (response?.game) {
+        setActiveGame(response.game);
+      }
+    } catch (err) {
+      addToast(err.message || 'Invalid move', 'error');
+    }
+  };
+
+  const handleGameAnswer = async (gameId, answerIndex) => {
+    if (!gameId) {
+      return;
+    }
+
+    try {
+      const response = await emitSocketAck('game_answer', { gameId, answerIndex });
+      if (response?.game) {
+        setActiveGame(response.game);
+      }
+    } catch (err) {
+      addToast(err.message || 'Failed to submit answer', 'error');
+    }
+  };
+
+  const handleForwardMessage = async (message, receiverIds) => {
+    if (!message?._id || !receiverIds?.length) {
+      return false;
+    }
+
+    try {
+      const { data } = await api.post('/messages/forward', {
+        messageId: message._id,
+        receiverIds,
+      });
+      const forwardCount = data?.forwarded?.length || receiverIds.length;
+      addToast(`Forwarded to ${forwardCount} contact${forwardCount === 1 ? '' : 's'}.`, 'success');
+      return true;
+    } catch (err) {
+      const errorMessage = err.response?.data?.message || 'Failed to forward message';
+      addToast(errorMessage, 'error');
+      return false;
+    }
   };
 
   const loadOlderMessages = async () => {
@@ -1598,6 +1746,13 @@ const ChatDashboard = () => {
           onReactMessage={handleReactMessage}
           onEditMessage={handleEditMessage}
           onDeleteMessage={handleDeleteMessage}
+          onForwardMessage={handleForwardMessage}
+          contacts={users}
+          onGameAccept={handleGameAccept}
+          onOpenGame={handleOpenGame}
+          onGameMove={handleGameMove}
+          onGameAnswer={handleGameAnswer}
+          activeGame={activeGame}
         />
 
         <MessageInput
@@ -1611,6 +1766,8 @@ const ChatDashboard = () => {
           editingMessage={editingMessage}
           onCancelReply={() => setReplyContext(null)}
           onCancelEdit={() => setEditingMessage(null)}
+          onGameInvite={handleGameInvite}
+          canStartGame={!isGroupChat && canDirectChat}
         />
       </section>
 
